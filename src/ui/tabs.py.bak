@@ -1,0 +1,283 @@
+"""
+Tab components cho Streamlit app.
+
+4 tabs:
+1. Phân mảnh - hiển thị genome và reads
+2. Đồ thị - visualization overlap/de Bruijn graph
+3. Thuật toán - step-by-step animation
+4. Kết quả - metrics và so sánh
+"""
+
+import streamlit as st
+import streamlit.components.v1 as components
+from src.visualization.graph_viz import GraphVisualizer
+from src.visualization.sequence_viz import SequenceVisualizer
+from src.assembly.metrics import alignment_accuracy, contig_statistics
+
+
+def render_fragmentation_tab():
+    """Tab 1: Quá trình phân mảnh genome thành reads."""
+    st.header("📋 Quá trình phân mảnh")
+
+    if not st.session_state.genome:
+        st.info("👈 Vui lòng tạo hoặc nhập genome ở sidebar")
+        return
+
+    # Genome info
+    genome = st.session_state.genome
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Độ dài genome", f"{len(genome)} bp")
+    with col2:
+        gc = (genome.count('G') + genome.count('C')) / len(genome) * 100
+        st.metric("GC content", f"{gc:.1f}%")
+    with col3:
+        st.metric("Số reads", len(st.session_state.reads) if st.session_state.reads else 0)
+
+    # Sequence visualization
+    st.subheader("Genome gốc")
+    seq_viz = SequenceVisualizer()
+    fig = seq_viz.render_sequence(genome, max_display=80, title="")
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Legend
+    st.markdown(SequenceVisualizer.get_base_legend_html(), unsafe_allow_html=True)
+
+    # Reads display
+    if st.session_state.reads:
+        st.subheader(f"Reads ({len(st.session_state.reads)} đoạn)")
+
+        # Show first 20 reads in grid
+        reads = st.session_state.reads[:20]
+        cols = st.columns(4)
+        for i, read in enumerate(reads):
+            with cols[i % 4]:
+                display = read if len(read) <= 12 else f"{read[:10]}..."
+                st.code(f"R{i}: {display}", language=None)
+
+        if len(st.session_state.reads) > 20:
+            st.caption(f"... và {len(st.session_state.reads) - 20} reads khác")
+
+
+def render_graph_tab():
+    """Tab 2: Graph visualization."""
+    st.header("🕸️ Đồ thị")
+
+    if not st.session_state.assembly_done:
+        st.info("👈 Vui lòng chạy lắp ráp trước")
+        return
+
+    algo = st.session_state.algorithm
+    graph_viz = GraphVisualizer(height="450px")
+
+    # Legend
+    st.markdown(GraphVisualizer.get_legend_html(), unsafe_allow_html=True)
+
+    if algo == "So sánh cả hai":
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("OLC Overlap Graph")
+            _render_olc_graph(graph_viz)
+        with col2:
+            st.subheader("DBG de Bruijn Graph")
+            _render_dbg_graph(graph_viz)
+    elif algo == "OLC":
+        st.subheader("OLC Overlap Graph")
+        _render_olc_graph(graph_viz)
+    else:
+        st.subheader("DBG de Bruijn Graph")
+        _render_dbg_graph(graph_viz)
+
+
+def _render_olc_graph(graph_viz):
+    """Render OLC overlap graph."""
+    assembler = st.session_state.olc_assembler
+    if not assembler:
+        st.warning("Chưa có dữ liệu OLC")
+        return
+
+    overlaps = [(o.read_a, o.read_b, o.length) for o in assembler.overlaps]
+    html = graph_viz.render_overlap_graph(
+        reads=assembler.reads,
+        overlaps=overlaps,
+        path=assembler.path
+    )
+    components.html(html, height=480, scrolling=True)
+
+    st.caption(f"📊 {len(assembler.reads)} nodes, {len(overlaps)} edges")
+
+
+def _render_dbg_graph(graph_viz):
+    """Render DBG de Bruijn graph."""
+    assembler = st.session_state.dbg_assembler
+    if not assembler:
+        st.warning("Chưa có dữ liệu DBG")
+        return
+
+    stats = assembler.get_graph_stats()
+    html = graph_viz.render_debruijn_graph(
+        graph=dict(assembler.graph),
+        path=assembler.path
+    )
+    components.html(html, height=480, scrolling=True)
+
+    st.caption(f"📊 {stats['num_nodes']} nodes, {stats['num_edges']} edges, k={stats['k']}")
+
+
+def render_algorithm_tab():
+    """Tab 3: Step-by-step algorithm animation."""
+    st.header("⚙️ Thuật toán từng bước")
+
+    controller = st.session_state.animation_controller
+    if not controller or not controller.has_frames():
+        st.info("👈 Vui lòng chạy lắp ráp trước")
+        return
+
+    # Animation controls
+    col1, col2, col3, col4, col5 = st.columns([1, 1, 1, 1, 2])
+
+    with col1:
+        if st.button("⏮️ Đầu", disabled=controller.is_first, use_container_width=True):
+            controller.reset()
+            st.rerun()
+    with col2:
+        if st.button("◀️ Trước", disabled=controller.is_first, use_container_width=True):
+            controller.prev_step()
+            st.rerun()
+    with col3:
+        if st.button("▶️ Sau", disabled=controller.is_last, use_container_width=True):
+            controller.next_step()
+            st.rerun()
+    with col4:
+        if st.button("⏭️ Cuối", disabled=controller.is_last, use_container_width=True):
+            controller.go_to_end()
+            st.rerun()
+    with col5:
+        step = st.slider(
+            "Bước:",
+            0, controller.total_frames - 1,
+            controller.current_index,
+            label_visibility="collapsed"
+        )
+        if step != controller.current_index:
+            controller.go_to_step(step)
+            st.rerun()
+
+    # Progress bar
+    st.progress(controller.progress)
+    st.caption(f"Bước {controller.current_index + 1} / {controller.total_frames}")
+
+    # Current state message
+    frame = controller.current_frame
+    if frame:
+        phase_names = {
+            'overlap': '🔍 Tìm Overlap',
+            'path': '🛤️ Tìm đường đi',
+            'consensus': '🧬 Ghép chuỗi',
+            'kmer': '🔤 Tạo k-mers',
+            'graph': '🕸️ Xây đồ thị',
+            'euler': '🛤️ Tìm đường Euler',
+            'reconstruct': '🧬 Tái tạo genome'
+        }
+        phase_display = phase_names.get(frame.phase.value, frame.phase.value)
+        st.info(f"**{phase_display}**: {frame.message}")
+
+    # Phase summary
+    with st.expander("📊 Thống kê các phase"):
+        summary = controller.get_phase_summary()
+        for phase, count in summary.items():
+            st.write(f"- {phase}: {count} bước")
+
+
+def render_results_tab():
+    """Tab 4: Results and metrics."""
+    st.header("📊 Kết quả lắp ráp")
+
+    if not st.session_state.assembly_done:
+        st.info("👈 Vui lòng chạy lắp ráp trước")
+        return
+
+    genome = st.session_state.genome
+    algo = st.session_state.algorithm
+    seq_viz = SequenceVisualizer()
+
+    if algo == "So sánh cả hai":
+        _render_comparison_results(genome, seq_viz)
+    elif algo == "OLC":
+        _render_single_result("OLC", st.session_state.olc_result, genome, seq_viz)
+    else:
+        _render_single_result("DBG", st.session_state.dbg_result, genome, seq_viz)
+
+
+def _render_single_result(name: str, result: str, genome: str, seq_viz):
+    """Render result for single algorithm."""
+    if not result:
+        st.warning(f"Không có kết quả {name}")
+        return
+
+    # Metrics
+    accuracy = alignment_accuracy(result, genome)
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Độ dài genome gốc", f"{len(genome)} bp")
+    with col2:
+        st.metric(f"Độ dài {name}", f"{len(result)} bp")
+    with col3:
+        st.metric("Độ chính xác", f"{accuracy}%")
+
+    # Alignment view
+    st.subheader("So sánh với genome gốc")
+    fig = seq_viz.render_alignment(genome, result, max_display=60)
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Raw sequences
+    with st.expander("🔤 Xem chuỗi thô"):
+        st.text_area("Genome gốc:", genome[:500], height=80, disabled=True)
+        st.text_area(f"Kết quả {name}:", result[:500], height=80, disabled=True)
+
+
+def _render_comparison_results(genome: str, seq_viz):
+    """Render comparison between OLC and DBG."""
+    olc_result = st.session_state.olc_result
+    dbg_result = st.session_state.dbg_result
+
+    # Metrics comparison
+    st.subheader("So sánh các thuật toán")
+
+    olc_acc = alignment_accuracy(olc_result, genome) if olc_result else 0
+    dbg_acc = alignment_accuracy(dbg_result, genome) if dbg_result else 0
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Genome gốc", f"{len(genome)} bp")
+    with col2:
+        st.metric("OLC", f"{len(olc_result)} bp", f"{olc_acc}% accuracy")
+    with col3:
+        st.metric("DBG", f"{len(dbg_result)} bp", f"{dbg_acc}% accuracy")
+
+    # Side by side alignment
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("OLC vs Gốc")
+        if olc_result:
+            fig = seq_viz.render_alignment(genome, olc_result, max_display=40)
+            st.plotly_chart(fig, use_container_width=True)
+
+    with col2:
+        st.subheader("DBG vs Gốc")
+        if dbg_result:
+            fig = seq_viz.render_alignment(genome, dbg_result, max_display=40)
+            st.plotly_chart(fig, use_container_width=True)
+
+    # Summary table
+    st.subheader("Bảng tổng hợp")
+    comparison_data = {
+        "Thuật toán": ["OLC (Hamilton)", "DBG (Euler)"],
+        "Độ dài kết quả": [len(olc_result), len(dbg_result)],
+        "Độ chính xác (%)": [olc_acc, dbg_acc],
+        "Số bước": [
+            len(st.session_state.olc_assembler.get_step_states()) if st.session_state.olc_assembler else 0,
+            len(st.session_state.dbg_assembler.get_step_states()) if st.session_state.dbg_assembler else 0
+        ]
+    }
+    st.table(comparison_data)
