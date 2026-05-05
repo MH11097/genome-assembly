@@ -196,9 +196,27 @@ class GraphVisualizer:
     def _export_html(self, net: Any) -> str:
         """Export network to HTML string."""
         try:
-            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.html') as f:
-                net.save_graph(f.name)
-                temp_path = f.name
+            # Sử dụng generate_html() để lấy HTML trực tiếp, tránh lỗi encoding
+            # PyVis >= 0.3.0 hỗ trợ generate_html()
+            if hasattr(net, 'generate_html'):
+                return net.generate_html()
+            
+            # Fallback: dùng temp file với binary mode để tránh encoding issues
+            temp_path = tempfile.mktemp(suffix='.html')
+            
+            # Monkey-patch để force UTF-8 encoding
+            import builtins
+            original_open = builtins.open
+            def utf8_open(*args, **kwargs):
+                if len(args) > 1 and 'w' in str(args[1]) and 'b' not in str(args[1]):
+                    kwargs.setdefault('encoding', 'utf-8')
+                return original_open(*args, **kwargs)
+            
+            try:
+                builtins.open = utf8_open
+                net.save_graph(temp_path)
+            finally:
+                builtins.open = original_open
 
             with open(temp_path, 'r', encoding='utf-8') as f:
                 html = f.read()

@@ -19,16 +19,120 @@ from src.visualization.animator import AnimationController
 
 def render_sidebar():
     """Render toàn bộ sidebar controls."""
+    # Custom CSS để giảm khoảng cách trong sidebar - phiên bản thu gọn tối đa
+    st.markdown("""
+        <style>
+        /* Giảm padding tổng thể của sidebar */
+        [data-testid="stSidebar"] > div:first-child {
+            padding-top: 0.5rem;
+            padding-bottom: 0.5rem;
+        }
+        
+        /* Giảm mạnh khoảng cách giữa các phần tử trong sidebar */
+        [data-testid="stSidebar"] .stMarkdown,
+        [data-testid="stSidebar"] .stRadio,
+        [data-testid="stSidebar"] .stSelectbox,
+        [data-testid="stSidebar"] .stSlider,
+        [data-testid="stSidebar"] .stCheckbox,
+        [data-testid="stSidebar"] .stButton,
+        [data-testid="stSidebar"] .stTextArea {
+            margin-bottom: 0rem !important;
+            margin-top: 0rem !important;
+        }
+        
+        /* Giảm khoảng cách của subheader */
+        [data-testid="stSidebar"] h3 {
+            margin-top: 0.3rem !important;
+            margin-bottom: 0.1rem !important;
+            font-size: 0.9rem !important;
+            padding: 0 !important;
+        }
+        
+        /* Giảm khoảng cách của header chính */
+        [data-testid="stSidebar"] h2 {
+            margin-bottom: 0.2rem !important;
+            margin-top: 0 !important;
+            font-size: 1rem !important;
+        }
+        
+        /* Ẩn hoàn toàn divider */
+        [data-testid="stSidebar"] hr {
+            display: none !important;
+        }
+        
+        /* Thu gọn alert/info box */
+        [data-testid="stSidebar"] .stAlert {
+            padding: 0.3rem 0.5rem !important;
+            margin: 0.1rem 0 !important;
+        }
+        [data-testid="stSidebar"] .stAlert p {
+            font-size: 0.8rem !important;
+            margin: 0 !important;
+        }
+        
+        /* Thu gọn radio button layout */
+        [data-testid="stSidebar"] .stRadio > div {
+            gap: 0.1rem !important;
+        }
+        [data-testid="stSidebar"] .stRadio label {
+            font-size: 0.8rem !important;
+            padding: 0.1rem 0.3rem !important;
+        }
+        
+        /* Giảm kích thước label */
+        [data-testid="stSidebar"] .stSlider > label,
+        [data-testid="stSidebar"] .stSelectbox > label,
+        [data-testid="stSidebar"] .stTextArea > label,
+        [data-testid="stSidebar"] .stCheckbox > label {
+            font-size: 0.8rem !important;
+        }
+        
+        /* Thu gọn slider */
+        [data-testid="stSidebar"] .stSlider {
+            padding-top: 0 !important;
+            padding-bottom: 0 !important;
+        }
+        [data-testid="stSidebar"] .stSlider > div {
+            padding-bottom: 0.2rem !important;
+        }
+        
+        /* Thu gọn button */
+        [data-testid="stSidebar"] .stButton > button {
+            padding: 0.3rem 0.5rem !important;
+            font-size: 0.85rem !important;
+        }
+        
+        /* Thu gọn text area */
+        [data-testid="stSidebar"] .stTextArea textarea {
+            min-height: 60px !important;
+        }
+        
+        /* Thu gọn selectbox */
+        [data-testid="stSidebar"] .stSelectbox > div {
+            margin-bottom: 0 !important;
+        }
+        
+        /* Thu gọn caption */
+        [data-testid="stSidebar"] .stCaption {
+            font-size: 0.7rem !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+        
+        /* Ẩn các element container spacing */
+        [data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div {
+            gap: 0.2rem !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
     st.sidebar.header("⚙️ Điều khiển")
 
     _render_genome_input()
-    st.sidebar.divider()
 
     _render_read_params()
-    st.sidebar.divider()
 
     _render_algorithm_selection()
-    st.sidebar.divider()
 
     _render_run_button()
 
