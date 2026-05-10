@@ -129,8 +129,6 @@ def render_sidebar():
     
     st.sidebar.header("⚙️ Điều khiển")
 
-    _render_presets()
-
     _render_genome_input()
 
     _render_read_params()
@@ -140,46 +138,23 @@ def render_sidebar():
     _render_run_button()
 
 
-# Mỗi preset là một dict tham số nhằm minh hoạ một góc nhìn so sánh OLC vs DBG.
-_PRESETS = {
-    "⚖️ Cân bằng": {
-        "read_length": 50, "coverage": 15,
-        "min_overlap": 10, "k_value": 9,
-        "_hint": "Cả hai cùng tốt → so sánh runtime O(n²) vs O(n)"
-    },
-    "🔬 Reads ngắn, k thấp": {
-        "read_length": 20, "coverage": 20,
-        "min_overlap": 5, "k_value": 5,
-        "_hint": "DBG gom k-mer mật độ cao; OLC graph dày"
-    },
-    "📏 Reads dài": {
-        "read_length": 120, "coverage": 8,
-        "min_overlap": 30, "k_value": 15,
-        "_hint": "OLC overlap dài, đồ thị thưa; DBG cần k cao"
-    },
-    "🌊 Coverage cao": {
-        "read_length": 50, "coverage": 30,
-        "min_overlap": 10, "k_value": 9,
-        "_hint": "OLC bùng nổ overlap; DBG ổn định nhờ dedup"
-    },
-}
+# Demo tập trung vào tham số thuật toán (read_length, min_overlap, k) chứ
+# không vào tham số sequencing → seed hardcode, coverage dẫn xuất tự động.
+_FIXED_SEED = 42
+_TARGET_NUM_READS = 80  # số reads target khi tính coverage tự động
 
 
-def _render_presets():
-    """4 preset 1-click để load nhanh kịch bản so sánh."""
-    st.sidebar.subheader("🎯 Preset so sánh")
-    cols = st.sidebar.columns(2)
-    items = list(_PRESETS.items())
-    for i, (name, params) in enumerate(items):
-        with cols[i % 2]:
-            if st.button(name, key=f"preset_{i}", use_container_width=True,
-                         help=params.get("_hint", "")):
-                for k, v in params.items():
-                    if k.startswith("_"):
-                        continue
-                    st.session_state[k] = v
-                st.session_state.assembly_done = False
-                st.rerun()
+def _derive_coverage(genome_len: int, read_length: int) -> int:
+    """Tính coverage để số reads ~ _TARGET_NUM_READS.
+
+    num_reads = genome_len * coverage / read_length
+    → coverage = target * read_length / genome_len
+    Clamp [5, 25] để tránh degenerate configs (0 reads / quá nhiều reads).
+    """
+    if genome_len <= 0:
+        return 10
+    derived = round(_TARGET_NUM_READS * read_length / genome_len)
+    return max(5, min(25, derived))
 
 
 def _render_genome_input():
@@ -239,27 +214,11 @@ def _render_read_params():
         value=int(st.session_state.get("read_length", 50)), step=5
     )
 
-    st.session_state.coverage = st.sidebar.slider(
-        "Độ phủ (coverage):", 3, 30,
-        value=int(st.session_state.get("coverage", 15))
-    )
-
-    # Warning for low coverage
-    if st.session_state.coverage < 10:
-        st.sidebar.warning("⚠️ Coverage thấp (<10x) có thể cho kết quả kém")
-
-    st.session_state.random_seed = st.sidebar.number_input(
-        "Random seed (reproducible):",
-        min_value=0, max_value=999999,
-        value=st.session_state.get('random_seed', 42),
-        step=1,
-        help="Cùng seed → cùng reads. Đổi seed để thử cấu hình ngẫu nhiên khác."
-    )
-
-    # Estimate reads count
+    # Estimate reads count (coverage dẫn xuất từ read_length + genome_len)
     if st.session_state.genome:
-        est_reads = (len(st.session_state.genome) * st.session_state.coverage) // st.session_state.read_length
-        st.sidebar.caption(f"~{est_reads} reads sẽ được tạo")
+        cov = _derive_coverage(len(st.session_state.genome), st.session_state.read_length)
+        est_reads = (len(st.session_state.genome) * cov) // st.session_state.read_length
+        st.sidebar.caption(f"~{est_reads} reads · coverage tự động {cov}×")
 
 
 def _render_algorithm_selection():
@@ -317,12 +276,14 @@ def _run_assembly():
 
     with st.sidebar:
         with st.spinner("Đang phân mảnh..."):
-            # Fragment genome
-            fragmenter = ReadFragmenter(seed=st.session_state.random_seed)
+            # Fragment genome — seed cố định, coverage dẫn xuất tự động
+            coverage = _derive_coverage(len(genome), st.session_state.read_length)
+            st.session_state.coverage = coverage  # giữ để section hiển thị
+            fragmenter = ReadFragmenter(seed=_FIXED_SEED)
             st.session_state.reads = fragmenter.fragment(
                 genome,
                 st.session_state.read_length,
-                st.session_state.coverage
+                coverage,
             )
 
         algo = st.session_state.algorithm

@@ -31,10 +31,9 @@ def init_session_state():
         'reads': [],
         'algorithm': 'OLC',
         'read_length': 50,
-        'coverage': 10,
+        'coverage': 0,  # dẫn xuất tại runtime, chỉ giữ để hiển thị
         'min_overlap': 10,
         'k_value': 11,
-        'random_seed': 42,
         'olc_assembler': None,
         'dbg_assembler': None,
         'olc_result': '',

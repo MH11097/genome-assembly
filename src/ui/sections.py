@@ -311,10 +311,9 @@ def _render_comparison_results(genome: str, seq_viz):
         "🔧 Tham số: "
         f"genome={len(genome)} bp · "
         f"reads={len(st.session_state.reads)} × {st.session_state.read_length} bp "
-        f"(coverage {st.session_state.coverage}×) · "
+        f"(coverage {st.session_state.coverage}× tự động) · "
         f"OLC min_overlap={st.session_state.min_overlap} · "
-        f"DBG k={st.session_state.k_value} · "
-        f"seed={st.session_state.random_seed}"
+        f"DBG k={st.session_state.k_value}"
     )
 
     # Summary table
