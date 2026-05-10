@@ -71,8 +71,10 @@ class DBGAssembler:
         Node = (k-1)-mer, Edge = k-mer
         Edge từ prefix (k-1)-mer đến suffix (k-1)-mer
 
-        Note: Chỉ thêm 1 edge cho mỗi k-mer (không đếm multiplicity)
-        để đơn giản hóa cho mục đích giáo dục.
+        GIÁO DỤC: dedupe edges để mỗi k-mer = 1 edge → graph dễ visualize
+        (không multi-edge song song giữa 2 node). Hệ quả: mất khả năng
+        xử lý đúng vùng repeat — DBG production phải dùng MultiGraph và
+        track multiplicity của k-mer để Hierholzer đi qua mỗi instance.
         """
         self.graph = defaultdict(list)
         self.in_degree = defaultdict(int)
@@ -108,15 +110,17 @@ class DBGAssembler:
         if not self.graph:
             return []
 
-        # Tìm node bắt đầu (out_degree > in_degree)
+        # Tìm node bắt đầu (out_degree > in_degree).
+        # Sort để đảm bảo deterministic - không phụ thuộc PYTHONHASHSEED.
         start = None
-        for node in set(self.out_degree.keys()) | set(self.in_degree.keys()):
+        all_nodes = sorted(set(self.out_degree.keys()) | set(self.in_degree.keys()))
+        for node in all_nodes:
             if self.out_degree[node] > self.in_degree[node]:
                 start = node
                 break
 
         if start is None:
-            start = next(iter(self.graph), None)
+            start = sorted(self.graph.keys())[0] if self.graph else None
 
         if start is None:
             return []

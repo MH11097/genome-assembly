@@ -222,31 +222,28 @@ class OLCAssembler:
                         message=f"Dead-end tại R{dead_node}, backtrack về R{path[-1]}"
                     ))
                 else:
-                    # Không thể backtrack thêm - chấp nhận path hiện tại
-                    # Thêm các node còn lại (disconnected) nếu cần thiết cho demo
+                    # Không backtrack được nữa: chỉ kéo dài path nếu node tiếp theo
+                    # có overlap THẬT với current. Nếu không, dừng - chấp nhận
+                    # incomplete coverage thay vì ghép thừa làm genome inflate.
                     remaining = [node for node in range(n) if node not in visited]
-                    if remaining:
-                        # Tìm node có overlap tốt nhất với bất kỳ node nào trong path
-                        best_node = None
-                        best_overlap = 0
-                        for node in remaining:
-                            for path_node in path:
-                                overlap = self._get_overlap_length(path_node, node)
-                                if overlap > best_overlap:
-                                    best_overlap = overlap
-                                    best_node = node
-                        if best_node is None:
-                            best_node = remaining[0]
-
-                        path.append(best_node)
-                        visited.add(best_node)
-                        self._states.append(OLCState(
-                            phase='layout',
-                            step=len(self._states),
-                            path=path.copy(),
-                            visited=visited.copy(),
-                            message=f"Đồ thị rời rạc, thêm R{best_node} (overlap={best_overlap}bp)"
-                        ))
+                    best_next, best_overlap = None, 0
+                    for cand in remaining:
+                        ov = self._get_overlap_length(current, cand)
+                        if ov > best_overlap:
+                            best_overlap = ov
+                            best_next = cand
+                    if best_next is None:
+                        break
+                    path.append(best_next)
+                    visited.add(best_next)
+                    self._states.append(OLCState(
+                        phase='layout',
+                        step=len(self._states),
+                        current_pair=(current, best_next),
+                        path=path.copy(),
+                        visited=visited.copy(),
+                        message=f"Hết backtrack, nối R{current} → R{best_next} (overlap {best_overlap} bp)"
+                    ))
 
         self.path = path
         return path

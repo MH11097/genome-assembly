@@ -47,53 +47,45 @@ def calculate_n50(contig_lengths: List[int]) -> int:
 
 def alignment_accuracy(assembled: str, reference: str) -> float:
     """
-    Tính độ chính xác của genome lắp ráp so với genome gốc.
+    Tính độ chính xác = % ký tự reference khớp với assembled tại offset tốt nhất.
 
-    Sử dụng 2 metrics:
-    1. Prefix match: So sánh từ đầu (quan trọng nhất cho assembly)
-    2. Best substring match: Tìm đoạn khớp tốt nhất
+    Phiên bản giáo dục: Hamilton/Euler path không nhất thiết bắt đầu từ đầu
+    reference, nên thử mọi offset (cả assembled lệch phải lẫn reference lệch
+    phải) và lấy số ký tự khớp lớn nhất, chia cho len(reference).
 
     Args:
         assembled: Genome đã lắp ráp
         reference: Genome gốc (reference)
 
     Returns:
-        Accuracy (0-100%)
+        Accuracy (0-100%) so với len(reference)
 
     Examples:
         >>> alignment_accuracy("ATCG", "ATCG")
         100.0
-        >>> alignment_accuracy("ATCG", "ATCC")
+        >>> alignment_accuracy("ATCC", "ATCG")
         75.0
+        >>> alignment_accuracy("XXATCGXX", "ATCG")
+        100.0
     """
-    if not reference:
-        return 0.0
-    if not assembled:
+    if not reference or not assembled:
         return 0.0
 
-    # Method 1: Prefix match (character-by-character từ đầu)
-    min_len = min(len(assembled), len(reference))
-    prefix_matches = sum(1 for i in range(min_len) if assembled[i] == reference[i])
+    best = 0
+    # assembled lệch phải s ký tự (so reference[s..] với assembled[0..])
+    for s in range(len(reference)):
+        m = sum(1 for i in range(min(len(assembled), len(reference) - s))
+                if assembled[i] == reference[s + i])
+        if m > best:
+            best = m
+    # reference lệch phải s ký tự (so assembled[s..] với reference[0..])
+    for s in range(1, len(assembled)):
+        m = sum(1 for i in range(min(len(reference), len(assembled) - s))
+                if assembled[s + i] == reference[i])
+        if m > best:
+            best = m
 
-    # Method 2: Best sliding window match (tìm vị trí khớp tốt nhất)
-    best_match = prefix_matches
-    max_shift = min(50, len(reference) // 4)  # Giới hạn tìm kiếm
-
-    for shift in range(1, max_shift + 1):
-        # Shift assembled to the right
-        matches = sum(1 for i in range(min(len(assembled), len(reference) - shift))
-                      if assembled[i] == reference[i + shift])
-        best_match = max(best_match, matches)
-
-        # Shift reference to the right
-        matches = sum(1 for i in range(min(len(assembled) - shift, len(reference)))
-                      if assembled[i + shift] == reference[i])
-        best_match = max(best_match, matches)
-
-    # Tính accuracy dựa trên max(assembled, reference) length
-    max_len = max(len(assembled), len(reference))
-    accuracy = (best_match / max_len) * 100
-
+    accuracy = (best / len(reference)) * 100
     return round(min(accuracy, 100.0), 1)
 
 

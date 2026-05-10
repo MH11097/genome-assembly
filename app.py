@@ -34,10 +34,13 @@ def init_session_state():
         'coverage': 10,
         'min_overlap': 10,
         'k_value': 11,
+        'random_seed': 42,
         'olc_assembler': None,
         'dbg_assembler': None,
         'olc_result': '',
         'dbg_result': '',
+        'olc_time_ms': 0.0,
+        'dbg_time_ms': 0.0,
         'animation_controller': None,
         'step_index': 0,
         'assembly_done': False

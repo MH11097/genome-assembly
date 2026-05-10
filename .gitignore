@@ -3,3 +3,4 @@ CLAUDE.md
 plans/
 docs/
 tests/
+__pycache__

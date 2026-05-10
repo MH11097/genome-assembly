@@ -218,15 +218,19 @@ def _render_single_result(name: str, result: str, genome: str, seq_viz):
         return
 
     accuracy = alignment_accuracy(result, genome)
+    time_ms = (st.session_state.olc_time_ms if name == "OLC"
+               else st.session_state.dbg_time_ms)
 
     # Metrics row
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Genome gốc", f"{len(genome)} bp")
     with col2:
         st.metric(f"Kết quả {name}", f"{len(result)} bp")
     with col3:
         st.metric("Độ chính xác", f"{accuracy}%")
+    with col4:
+        st.metric("Thời gian", _format_time(time_ms))
 
     # Alignment view
     fig = seq_viz.render_alignment(genome, result, max_display=60)
@@ -245,15 +249,23 @@ def _render_comparison_results(genome: str, seq_viz):
 
     olc_acc = alignment_accuracy(olc_result, genome) if olc_result else 0
     dbg_acc = alignment_accuracy(dbg_result, genome) if dbg_result else 0
+    olc_t = st.session_state.olc_time_ms
+    dbg_t = st.session_state.dbg_time_ms
+    speedup = (olc_t / dbg_t) if dbg_t > 0 else 0
 
     # Metrics row
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Genome gốc", f"{len(genome)} bp")
     with col2:
-        st.metric("OLC", f"{len(olc_result)} bp", f"{olc_acc}%")
+        st.metric("OLC", f"{len(olc_result)} bp",
+                  f"{olc_acc}% • {_format_time(olc_t)}")
     with col3:
-        st.metric("DBG", f"{len(dbg_result)} bp", f"{dbg_acc}%")
+        st.metric("DBG", f"{len(dbg_result)} bp",
+                  f"{dbg_acc}% • {_format_time(dbg_t)}")
+
+    if speedup > 0:
+        st.caption(f"⚡ DBG nhanh hơn OLC **{speedup:.1f}×**")
 
     # Side by side alignment
     col1, col2 = st.columns(2)
@@ -275,8 +287,20 @@ def _render_comparison_results(genome: str, seq_viz):
         "Thuật toán": ["OLC (Hamilton)", "DBG (Euler)"],
         "Độ dài": [len(olc_result), len(dbg_result)],
         "Chính xác (%)": [olc_acc, dbg_acc],
+        "Thời gian": [_format_time(olc_t), _format_time(dbg_t)],
         "Số bước": [
             len(st.session_state.olc_assembler.get_step_states()) if st.session_state.olc_assembler else 0,
             len(st.session_state.dbg_assembler.get_step_states()) if st.session_state.dbg_assembler else 0
         ]
     })
+
+
+def _format_time(ms: float) -> str:
+    """Format thời gian: <1ms hiện μs, <1000ms hiện ms, >=1000ms hiện s."""
+    if ms <= 0:
+        return "—"
+    if ms < 1:
+        return f"{ms * 1000:.0f} μs"
+    if ms < 1000:
+        return f"{ms:.1f} ms"
+    return f"{ms / 1000:.2f} s"

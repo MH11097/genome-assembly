@@ -8,6 +8,7 @@ Bao gồm:
 - Run button
 """
 
+import time
 import streamlit as st
 from src.genome.generator import GenomeGenerator
 from src.genome.fragmenter import ReadFragmenter
@@ -163,16 +164,10 @@ def _render_genome_input():
 
     elif input_method == "Tạo ngẫu nhiên":
         length = st.sidebar.slider("Độ dài (bp):", 50, 2000, 300, 50)
-        use_repeats = st.sidebar.checkbox("Có vùng lặp lại (repeat)")
 
         if st.sidebar.button("🎲 Tạo genome", use_container_width=True):
             gen = GenomeGenerator()
-            if use_repeats:
-                st.session_state.genome = gen.generate_with_repeats(
-                    length, repeat_unit="ATATAT", num_copies=3
-                )
-            else:
-                st.session_state.genome = gen.generate_random(length)
+            st.session_state.genome = gen.generate_random(length)
             st.session_state.assembly_done = False
             st.rerun()
 
@@ -196,16 +191,26 @@ def _render_read_params():
     st.sidebar.subheader("📖 Tham số đọc")
 
     st.session_state.read_length = st.sidebar.slider(
-        "Độ dài read (bp):", 10, 100, 50, 5
+        "Độ dài read (bp):", 10, 200,
+        value=int(st.session_state.get("read_length", 50)), step=5
     )
 
     st.session_state.coverage = st.sidebar.slider(
-        "Độ phủ (coverage):", 3, 30, 15
+        "Độ phủ (coverage):", 3, 30,
+        value=int(st.session_state.get("coverage", 15))
     )
 
     # Warning for low coverage
     if st.session_state.coverage < 10:
         st.sidebar.warning("⚠️ Coverage thấp (<10x) có thể cho kết quả kém")
+
+    st.session_state.random_seed = st.sidebar.number_input(
+        "Random seed (reproducible):",
+        min_value=0, max_value=999999,
+        value=st.session_state.get('random_seed', 42),
+        step=1,
+        help="Cùng seed → cùng reads. Đổi seed để thử cấu hình ngẫu nhiên khác."
+    )
 
     # Estimate reads count
     if st.session_state.genome:
@@ -217,16 +222,21 @@ def _render_algorithm_selection():
     """Section chọn thuật toán."""
     st.sidebar.subheader("🔬 Thuật toán")
 
+    algo_options = ["OLC", "DBG", "So sánh cả hai"]
+    current_algo = st.session_state.get("algorithm", "OLC")
+    algo_idx = algo_options.index(current_algo) if current_algo in algo_options else 0
     st.session_state.algorithm = st.sidebar.radio(
         "Chọn:",
-        ["OLC", "DBG", "So sánh cả hai"],
+        algo_options,
+        index=algo_idx,
         horizontal=True
     )
 
     # OLC params
     if st.session_state.algorithm in ["OLC", "So sánh cả hai"]:
         st.session_state.min_overlap = st.sidebar.slider(
-            "Min overlap (OLC):", 3, 20, 5
+            "Min overlap (OLC):", 3, 80,
+            value=int(st.session_state.get("min_overlap", 5))
         )
         # Warning for aggressive overlap
         if st.session_state.min_overlap > st.session_state.read_length * 0.25:
@@ -235,7 +245,8 @@ def _render_algorithm_selection():
     # DBG params
     if st.session_state.algorithm in ["DBG", "So sánh cả hai"]:
         st.session_state.k_value = st.sidebar.slider(
-            "Giá trị k (DBG):", 5, 21, 7, 2
+            "Giá trị k (DBG):", 5, 31,
+            value=int(st.session_state.get("k_value", 7)), step=2
         )
         # Warning for k too high
         if st.session_state.k_value > st.session_state.read_length / 3:
@@ -263,7 +274,7 @@ def _run_assembly():
     with st.sidebar:
         with st.spinner("Đang phân mảnh..."):
             # Fragment genome
-            fragmenter = ReadFragmenter()
+            fragmenter = ReadFragmenter(seed=st.session_state.random_seed)
             st.session_state.reads = fragmenter.fragment(
                 genome,
                 st.session_state.read_length,
@@ -272,6 +283,10 @@ def _run_assembly():
 
         algo = st.session_state.algorithm
 
+        # Reset times
+        st.session_state.olc_time_ms = 0.0
+        st.session_state.dbg_time_ms = 0.0
+
         # Run OLC
         if algo in ["OLC", "So sánh cả hai"]:
             with st.spinner("Đang chạy OLC..."):
@@ -279,7 +294,9 @@ def _run_assembly():
                     st.session_state.reads,
                     min_overlap=st.session_state.min_overlap
                 )
+                t0 = time.perf_counter()
                 st.session_state.olc_result = olc.assemble()
+                st.session_state.olc_time_ms = (time.perf_counter() - t0) * 1000
                 st.session_state.olc_assembler = olc
 
         # Run DBG
@@ -289,7 +306,9 @@ def _run_assembly():
                     st.session_state.reads,
                     k=st.session_state.k_value
                 )
+                t0 = time.perf_counter()
                 st.session_state.dbg_result = dbg.assemble()
+                st.session_state.dbg_time_ms = (time.perf_counter() - t0) * 1000
                 st.session_state.dbg_assembler = dbg
 
         # Setup animation controller
