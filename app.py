@@ -41,7 +41,8 @@ def init_session_state():
         'dbg_result': '',
         'olc_time_ms': 0.0,
         'dbg_time_ms': 0.0,
-        'animation_controller': None,
+        'olc_animation_controller': None,
+        'dbg_animation_controller': None,
         'step_index': 0,
         'assembly_done': False
     }

@@ -129,6 +129,8 @@ def render_sidebar():
     
     st.sidebar.header("⚙️ Điều khiển")
 
+    _render_presets()
+
     _render_genome_input()
 
     _render_read_params()
@@ -136,6 +138,48 @@ def render_sidebar():
     _render_algorithm_selection()
 
     _render_run_button()
+
+
+# Mỗi preset là một dict tham số nhằm minh hoạ một góc nhìn so sánh OLC vs DBG.
+_PRESETS = {
+    "⚖️ Cân bằng": {
+        "read_length": 50, "coverage": 15,
+        "min_overlap": 10, "k_value": 9,
+        "_hint": "Cả hai cùng tốt → so sánh runtime O(n²) vs O(n)"
+    },
+    "🔬 Reads ngắn, k thấp": {
+        "read_length": 20, "coverage": 20,
+        "min_overlap": 5, "k_value": 5,
+        "_hint": "DBG gom k-mer mật độ cao; OLC graph dày"
+    },
+    "📏 Reads dài": {
+        "read_length": 120, "coverage": 8,
+        "min_overlap": 30, "k_value": 15,
+        "_hint": "OLC overlap dài, đồ thị thưa; DBG cần k cao"
+    },
+    "🌊 Coverage cao": {
+        "read_length": 50, "coverage": 30,
+        "min_overlap": 10, "k_value": 9,
+        "_hint": "OLC bùng nổ overlap; DBG ổn định nhờ dedup"
+    },
+}
+
+
+def _render_presets():
+    """4 preset 1-click để load nhanh kịch bản so sánh."""
+    st.sidebar.subheader("🎯 Preset so sánh")
+    cols = st.sidebar.columns(2)
+    items = list(_PRESETS.items())
+    for i, (name, params) in enumerate(items):
+        with cols[i % 2]:
+            if st.button(name, key=f"preset_{i}", use_container_width=True,
+                         help=params.get("_hint", "")):
+                for k, v in params.items():
+                    if k.startswith("_"):
+                        continue
+                    st.session_state[k] = v
+                st.session_state.assembly_done = False
+                st.rerun()
 
 
 def _render_genome_input():
@@ -311,16 +355,18 @@ def _run_assembly():
                 st.session_state.dbg_time_ms = (time.perf_counter() - t0) * 1000
                 st.session_state.dbg_assembler = dbg
 
-        # Setup animation controller
-        if algo == "OLC" and st.session_state.olc_assembler:
-            states = st.session_state.olc_assembler.get_step_states()
-            st.session_state.animation_controller = AnimationController(states)
-        elif algo == "DBG" and st.session_state.dbg_assembler:
-            states = st.session_state.dbg_assembler.get_step_states()
-            st.session_state.animation_controller = AnimationController(states)
-        elif algo == "So sánh cả hai" and st.session_state.olc_assembler:
-            states = st.session_state.olc_assembler.get_step_states()
-            st.session_state.animation_controller = AnimationController(states)
+        # Setup animation controllers (mỗi thuật toán 1 controller riêng để
+        # compare mode hiển thị 2 tab độc lập)
+        st.session_state.olc_animation_controller = None
+        st.session_state.dbg_animation_controller = None
+        if st.session_state.olc_assembler:
+            st.session_state.olc_animation_controller = AnimationController(
+                st.session_state.olc_assembler.get_step_states()
+            )
+        if st.session_state.dbg_assembler:
+            st.session_state.dbg_animation_controller = AnimationController(
+                st.session_state.dbg_assembler.get_step_states()
+            )
 
         st.session_state.assembly_done = True
         st.success("✅ Hoàn thành!")

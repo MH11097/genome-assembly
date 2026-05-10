@@ -65,60 +65,76 @@ def render_assembly_section():
 
     algo = st.session_state.algorithm
 
-    # 2 columns layout: 40% algorithm, 60% graph
+    if algo == "So sánh cả hai":
+        tab_olc, tab_dbg = st.tabs(["🟦 OLC (Hamilton)", "🟩 DBG (Euler)"])
+        with tab_olc:
+            _render_algo_pair("OLC", key_prefix="cmp_olc")
+        with tab_dbg:
+            _render_algo_pair("DBG", key_prefix="cmp_dbg")
+    else:
+        _render_algo_pair(algo, key_prefix=algo.lower())
+
+
+def _render_algo_pair(algo: str, key_prefix: str):
+    """Render cặp panel thuật toán + đồ thị cho 1 thuật toán."""
     col_algo, col_graph = st.columns([2, 3])
 
-    with col_algo:
-        _render_algorithm_panel()
+    if algo == "OLC":
+        controller = st.session_state.get('olc_animation_controller')
+    else:
+        controller = st.session_state.get('dbg_animation_controller')
 
+    with col_algo:
+        _render_algorithm_panel(controller, key_prefix=key_prefix)
     with col_graph:
         _render_graph_panel(algo)
 
 
-def _render_algorithm_panel():
-    """Panel thuật toán với animation controls."""
+def _render_algorithm_panel(controller, key_prefix: str = ""):
+    """Panel thuật toán với animation controls (nhận controller từ caller)."""
     st.subheader("⚙️ Thuật toán từng bước")
 
-    controller = st.session_state.animation_controller
     if not controller or not controller.has_frames():
         st.warning("Không có dữ liệu animation")
         return
 
-    # Compact navigation buttons
+    # Compact navigation buttons (key prefix để tránh xung đột giữa 2 tab compare)
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        if st.button("⏮️", disabled=controller.is_first, use_container_width=True, help="Về đầu"):
+        if st.button("⏮️", key=f"{key_prefix}_first", disabled=controller.is_first,
+                     use_container_width=True, help="Về đầu"):
             controller.reset()
             st.rerun()
     with c2:
-        if st.button("◀️", disabled=controller.is_first, use_container_width=True, help="Trước"):
+        if st.button("◀️", key=f"{key_prefix}_prev", disabled=controller.is_first,
+                     use_container_width=True, help="Trước"):
             controller.prev_step()
             st.rerun()
     with c3:
-        if st.button("▶️", disabled=controller.is_last, use_container_width=True, help="Sau"):
+        if st.button("▶️", key=f"{key_prefix}_next", disabled=controller.is_last,
+                     use_container_width=True, help="Sau"):
             controller.next_step()
             st.rerun()
     with c4:
-        if st.button("⏭️", disabled=controller.is_last, use_container_width=True, help="Về cuối"):
+        if st.button("⏭️", key=f"{key_prefix}_last", disabled=controller.is_last,
+                     use_container_width=True, help="Về cuối"):
             controller.go_to_end()
             st.rerun()
 
-    # Slider
     step = st.slider(
         "Bước:",
         0, controller.total_frames - 1,
         controller.current_index,
+        key=f"{key_prefix}_slider",
         label_visibility="collapsed"
     )
     if step != controller.current_index:
         controller.go_to_step(step)
         st.rerun()
 
-    # Progress
     st.progress(controller.progress)
     st.caption(f"Bước {controller.current_index + 1} / {controller.total_frames}")
 
-    # Current step message
     frame = controller.current_frame
     if frame:
         phase_names = {
@@ -133,7 +149,6 @@ def _render_algorithm_panel():
         phase_display = phase_names.get(frame.phase.value, frame.phase.value)
         st.info(f"**{phase_display}**\n\n{frame.message}")
 
-    # Phase summary (collapsed)
     with st.expander("📊 Thống kê"):
         summary = controller.get_phase_summary()
         for phase, count in summary.items():
@@ -141,22 +156,12 @@ def _render_algorithm_panel():
 
 
 def _render_graph_panel(algo: str):
-    """Panel đồ thị visualization."""
+    """Panel đồ thị visualization (1 thuật toán)."""
     st.subheader("🕸️ Đồ thị")
-
-    # Legend
     st.markdown(GraphVisualizer.get_legend_html(), unsafe_allow_html=True)
 
     graph_viz = GraphVisualizer(height="380px")
-
-    if algo == "So sánh cả hai":
-        # Sub-tabs for comparison
-        graph_tab1, graph_tab2 = st.tabs(["OLC", "DBG"])
-        with graph_tab1:
-            _render_olc_graph(graph_viz, height=350)
-        with graph_tab2:
-            _render_dbg_graph(graph_viz, height=350)
-    elif algo == "OLC":
+    if algo == "OLC":
         _render_olc_graph(graph_viz, height=400)
     else:
         _render_dbg_graph(graph_viz, height=400)
@@ -220,17 +225,24 @@ def _render_single_result(name: str, result: str, genome: str, seq_viz):
     accuracy = alignment_accuracy(result, genome)
     time_ms = (st.session_state.olc_time_ms if name == "OLC"
                else st.session_state.dbg_time_ms)
+    nodes, edges = _graph_stats(name)
 
     # Metrics row
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Genome gốc", f"{len(genome)} bp")
     with col2:
-        st.metric(f"Kết quả {name}", f"{len(result)} bp")
+        st.metric(f"Kết quả {name}",
+                  f"{len(result)} bp",
+                  f"{len(result) / len(genome) * 100:.0f}% covered")
     with col3:
         st.metric("Độ chính xác", f"{accuracy}%")
     with col4:
         st.metric("Thời gian", _format_time(time_ms))
+
+    # Complexity + graph stats
+    complexity = _complexity_label(name)
+    st.caption(f"📐 **{complexity}** · đồ thị: {nodes} đỉnh / {edges} cạnh")
 
     # Alignment view
     fig = seq_viz.render_alignment(genome, result, max_display=60)
@@ -253,6 +265,9 @@ def _render_comparison_results(genome: str, seq_viz):
     dbg_t = st.session_state.dbg_time_ms
     speedup = (olc_t / dbg_t) if dbg_t > 0 else 0
 
+    olc_nodes, olc_edges = _graph_stats("OLC")
+    dbg_nodes, dbg_edges = _graph_stats("DBG")
+
     # Metrics row
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -264,8 +279,18 @@ def _render_comparison_results(genome: str, seq_viz):
         st.metric("DBG", f"{len(dbg_result)} bp",
                   f"{dbg_acc}% • {_format_time(dbg_t)}")
 
+    # Complexity caption
+    st.caption(
+        f"📐 OLC **{_complexity_label('OLC')}** vs DBG **{_complexity_label('DBG')}** · "
+        f"`n` = số reads, `m` = read length, `V/E` = đỉnh/cạnh đồ thị"
+    )
     if speedup > 0:
-        st.caption(f"⚡ DBG nhanh hơn OLC **{speedup:.1f}×**")
+        if speedup >= 1.2:
+            st.caption(f"⚡ DBG nhanh hơn OLC **{speedup:.1f}×** — phù hợp với khác biệt độ phức tạp O(n²) vs O(n).")
+        elif speedup <= 0.8:
+            st.caption(f"⚡ Trong run này OLC nhanh hơn DBG **{1/speedup:.1f}×** (graph quá nhỏ để O(n²) lộ).")
+        else:
+            st.caption(f"⚡ Runtime gần như tương đương ({speedup:.2f}×) — kích thước input chưa đủ tách 2 thuật toán.")
 
     # Side by side alignment
     col1, col2 = st.columns(2)
@@ -281,18 +306,109 @@ def _render_comparison_results(genome: str, seq_viz):
             fig = seq_viz.render_alignment(genome, dbg_result, max_display=35)
             st.plotly_chart(fig, use_container_width=True)
 
+    # Parameter context caption
+    st.caption(
+        "🔧 Tham số: "
+        f"genome={len(genome)} bp · "
+        f"reads={len(st.session_state.reads)} × {st.session_state.read_length} bp "
+        f"(coverage {st.session_state.coverage}×) · "
+        f"OLC min_overlap={st.session_state.min_overlap} · "
+        f"DBG k={st.session_state.k_value} · "
+        f"seed={st.session_state.random_seed}"
+    )
+
     # Summary table
     st.subheader("Bảng tổng hợp")
     st.table({
         "Thuật toán": ["OLC (Hamilton)", "DBG (Euler)"],
-        "Độ dài": [len(olc_result), len(dbg_result)],
+        "Độ dài (bp)": [len(olc_result), len(dbg_result)],
+        "% covered": [
+            f"{len(olc_result) / len(genome) * 100:.0f}%",
+            f"{len(dbg_result) / len(genome) * 100:.0f}%"
+        ],
         "Chính xác (%)": [olc_acc, dbg_acc],
         "Thời gian": [_format_time(olc_t), _format_time(dbg_t)],
-        "Số bước": [
-            len(st.session_state.olc_assembler.get_step_states()) if st.session_state.olc_assembler else 0,
-            len(st.session_state.dbg_assembler.get_step_states()) if st.session_state.dbg_assembler else 0
-        ]
+        "Đỉnh đồ thị": [olc_nodes, dbg_nodes],
+        "Cạnh đồ thị": [olc_edges, dbg_edges],
     })
+
+    _render_comparison_insight(
+        olc_acc=olc_acc, dbg_acc=dbg_acc,
+        olc_t=olc_t, dbg_t=dbg_t,
+        olc_edges=olc_edges, dbg_edges=dbg_edges,
+    )
+
+
+def _render_comparison_insight(*, olc_acc, dbg_acc, olc_t, dbg_t, olc_edges, dbg_edges):
+    """Nhận xét tự động dựa trên metric so sánh."""
+    notes = []
+
+    if dbg_t > 0 and olc_t > dbg_t * 3:
+        notes.append(
+            f"⏱️ DBG nhanh hơn OLC ~{olc_t/dbg_t:.1f}× — "
+            "nhất quán với độ phức tạp O(n) thay vì O(n²·m²) khi tính overlap từng cặp."
+        )
+    elif olc_t > 0 and dbg_t > olc_t * 1.5:
+        notes.append(
+            f"⏱️ Bất ngờ: DBG chậm hơn OLC ~{dbg_t/olc_t:.1f}× — "
+            "thường do k cao tạo ít k-mer hữu ích hoặc số reads quá nhỏ."
+        )
+
+    if olc_edges > dbg_edges * 2 and olc_edges > 0:
+        notes.append(
+            f"🕸️ Đồ thị OLC dày hơn DBG ({olc_edges} vs {dbg_edges} cạnh) — "
+            "OLC so từng cặp reads, DBG gom k-mer trùng nên cấu trúc gọn hơn."
+        )
+    elif dbg_edges > olc_edges * 2 and dbg_edges > 0:
+        notes.append(
+            f"🕸️ Đồ thị DBG có nhiều cạnh hơn OLC ({dbg_edges} vs {olc_edges}) — "
+            "thường xảy ra khi k nhỏ, mỗi read sinh nhiều k-mer."
+        )
+
+    if olc_acc - dbg_acc >= 5:
+        notes.append(
+            f"🎯 OLC khôi phục đầy đủ hơn (+{olc_acc - dbg_acc:.1f}%) — "
+            "có thể k đang lớn so với read length, làm DBG mất k-mer hữu ích."
+        )
+    elif dbg_acc - olc_acc >= 5:
+        notes.append(
+            f"🎯 DBG khôi phục đầy đủ hơn (+{dbg_acc - olc_acc:.1f}%) — "
+            "có thể min_overlap quá khắt khe, làm OLC bỏ qua nhiều cạnh hợp lệ."
+        )
+    elif abs(olc_acc - dbg_acc) < 3:
+        notes.append(
+            "🎯 Hai thuật toán khôi phục tương đương — "
+            "trong điều kiện 'lý tưởng' khác biệt chủ yếu nằm ở chi phí tính toán."
+        )
+
+    if not notes:
+        return
+
+    with st.container(border=True):
+        st.markdown("**🔎 Nhận xét tự động**")
+        for n in notes:
+            st.markdown(f"- {n}")
+
+
+def _complexity_label(name: str) -> str:
+    """Nhãn độ phức tạp lý thuyết."""
+    if name == "OLC":
+        return "O(n²·m²)"
+    return "O(n·m + V+E)"
+
+
+def _graph_stats(name: str):
+    """(num_nodes, num_edges) cho thuật toán."""
+    if name == "OLC":
+        a = st.session_state.get('olc_assembler')
+        if not a:
+            return 0, 0
+        return len(a.reads), len(a.overlaps)
+    a = st.session_state.get('dbg_assembler')
+    if not a:
+        return 0, 0
+    s = a.get_graph_stats()
+    return s.get('num_nodes', 0), s.get('num_edges', 0)
 
 
 def _format_time(ms: float) -> str:
