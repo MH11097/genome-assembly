@@ -29,6 +29,10 @@ class OLCState:
     overlaps_found: List[Overlap] = field(default_factory=list)
     path: List[int] = field(default_factory=list)
     visited: Set[int] = field(default_factory=set)
+    overlap_length: int = 0              # Độ dài overlap của cặp hiện tại
+    backtrack: bool = False               # True nếu step này là backtrack
+    consensus_so_far: str = ""           # Genome đang được ghép (phase consensus)
+    merge_offset: int = -1                # Offset cộng dồn của read đang merge
     message: str = ""                    # Giải thích bằng tiếng Việt
 
 
@@ -63,6 +67,7 @@ class OLCAssembler:
         self.graph: Dict[int, List[Tuple[int, int]]] = {}  # {read_idx: [(neighbor_idx, overlap_len)]}
         self.path: List[int] = []
         self._states: List[OLCState] = []
+        self.timing_ms: Dict[str, float] = {}
 
     def find_overlaps(self) -> List[Overlap]:
         """
@@ -95,6 +100,7 @@ class OLCAssembler:
                         phase='overlap',
                         step=len(self._states),
                         current_pair=(i, j),
+                        overlap_length=overlap_len,
                         overlaps_found=self.overlaps.copy(),
                         message=f"Tìm thấy overlap: R{i} → R{j} ({overlap_len} bp)"
                     ))
@@ -202,6 +208,7 @@ class OLCAssembler:
                     phase='layout',
                     step=len(self._states),
                     current_pair=(current, next_node),
+                    overlap_length=overlap_len,
                     path=path.copy(),
                     visited=visited.copy(),
                     message=f"Di chuyển: R{current} → R{next_node} (overlap {overlap_len} bp)"
@@ -217,6 +224,8 @@ class OLCAssembler:
                     self._states.append(OLCState(
                         phase='layout',
                         step=len(self._states),
+                        current_pair=(dead_node, path[-1]),
+                        backtrack=True,
                         path=path.copy(),
                         visited=visited.copy(),
                         message=f"Dead-end tại R{dead_node}, backtrack về R{path[-1]}"
@@ -281,9 +290,13 @@ class OLCAssembler:
             phase='consensus',
             step=len(self._states),
             path=self.path,
-            message=f"Bắt đầu với R{self.path[0]}: {consensus[:20]}..."
+            consensus_so_far=consensus,
+            merge_offset=0,
+            current_pair=(self.path[0], self.path[0]),
+            message=f"Bắt đầu với R{self.path[0]} ({len(consensus)} bp)"
         ))
 
+        offset = 0  # Vị trí gốc của read hiện tại trong consensus
         # Ghép từng read tiếp theo
         for i in range(len(self.path) - 1):
             curr_idx = self.path[i]
@@ -291,34 +304,50 @@ class OLCAssembler:
 
             overlap_len = overlap_map.get((curr_idx, next_idx), 0)
             next_read = self.reads[next_idx]
+            offset += len(self.reads[curr_idx]) - overlap_len
 
             if overlap_len > 0:
-                # Thêm phần không overlap
                 consensus += next_read[overlap_len:]
             else:
-                # Không có overlap - thêm cả read
                 consensus += next_read
 
             self._states.append(OLCState(
                 phase='consensus',
                 step=len(self._states),
                 current_pair=(curr_idx, next_idx),
-                message=f"Ghép R{next_idx} (overlap={overlap_len}): ...{consensus[-20:]}"
+                overlap_length=overlap_len,
+                path=self.path,
+                consensus_so_far=consensus,
+                merge_offset=offset,
+                message=f"Ghép R{next_idx} (overlap {overlap_len}) → {len(consensus)} bp"
             ))
 
         return consensus
 
     def assemble(self) -> str:
         """
-        Chạy toàn bộ pipeline OLC.
+        Chạy toàn bộ pipeline OLC, đo timing từng phase.
 
         Returns:
             Genome đã lắp ráp
         """
+        import time
         self._states = []  # Reset states
+        self.timing_ms = {}
+
+        t0 = time.perf_counter()
         self.find_overlaps()
+        self.timing_ms['overlap'] = (time.perf_counter() - t0) * 1000.0
+
+        t0 = time.perf_counter()
         self.find_hamiltonian_path()
-        return self.build_consensus()
+        self.timing_ms['layout'] = (time.perf_counter() - t0) * 1000.0
+
+        t0 = time.perf_counter()
+        result = self.build_consensus()
+        self.timing_ms['consensus'] = (time.perf_counter() - t0) * 1000.0
+
+        return result
 
     def get_step_states(self) -> List[OLCState]:
         """Lấy danh sách states cho step-by-step visualization."""

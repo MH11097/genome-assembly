@@ -2,20 +2,67 @@
 Section components cho Streamlit app - Single Page Layout.
 
 3 sections:
-1. Phân mảnh - hiển thị genome và reads (top)
-2. Assembly - thuật toán + đồ thị side by side (middle)
-3. Kết quả - metrics và so sánh (bottom, after assembly done)
+1. Phân mảnh - genome + reads + Coverage Map (View 5)
+2. Assembly - 3-cột layout: Code Trace (V2) | Graph (V1) | Distribution (V4)
+   + bottom Action View (V3) + narration
+3. Kết quả - metrics + Phase Timeline (V6) + Diff View (V7)
 """
+
+from typing import Optional
 
 import streamlit as st
 import streamlit.components.v1 as components
+
 from src.visualization.graph_viz import GraphVisualizer
 from src.visualization.sequence_viz import SequenceVisualizer
+from src.visualization.network_plot import render_olc_graph, render_dbg_graph, legend_html
+from src.visualization.action_view import (
+    render_overlap_alignment, render_consensus_stack, render_sliding_window,
+    render_hierholzer_stack, render_reconstruct_progress, render_layout_breadcrumb,
+)
+from src.visualization.pseudocode import render_code_trace, render_var_inspector
+from src.visualization.coverage_map import render_coverage_map
+from src.visualization.timeline import render_phase_timeline
 from src.assembly.metrics import alignment_accuracy
 
 
+# Đồng bộ với SequenceVisualizer.BASE_COLORS / action_view.BASE_COLORS
+_READ_BAR_COLORS = {
+    'A': '#e63946', 'T': '#f4a261', 'G': '#2a9d8f', 'C': '#264653',
+    '-': '#BDBDBD', 'N': '#9E9E9E',
+}
+
+
+def _render_reads_bars(reads: list, max_display: int = 20) -> str:
+    """Render reads thành thanh màu — mỗi base = 1 cell màu theo bảng base color."""
+    if not reads:
+        return ""
+    cell_w = 8  # px/base — đủ nhỏ để read 80bp fit ngang, đủ to để phân biệt màu
+    rows = []
+    for i, read in enumerate(reads[:max_display]):
+        cells = "".join(
+            f'<span style="display:inline-block;width:{cell_w}px;height:14px;'
+            f'background:{_READ_BAR_COLORS.get(b.upper(), "#EEE")};"></span>'
+            for b in read
+        )
+        rows.append(
+            f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:3px;">'
+            f'<span style="display:inline-block;width:36px;font-family:ui-monospace,monospace;'
+            f'font-size:12px;color:#666;text-align:right;">R{i}</span>'
+            f'<span style="white-space:nowrap;">{cells}</span>'
+            f'<span style="font-family:ui-monospace,monospace;font-size:11px;color:#999;">'
+            f'{len(read)} bp</span>'
+            f'</div>'
+        )
+    return f'<div style="overflow-x:auto;padding:4px 0;">{"".join(rows)}</div>'
+
+
+# ===========================================================================
+# Section 1 — Phân mảnh
+# ===========================================================================
+
 def render_fragmentation_section():
-    """Section 1: Quá trình phân mảnh genome thành reads."""
+    """Section 1: Quá trình phân mảnh genome thành reads + Coverage Map."""
     st.header("📋 Phân mảnh Genome")
 
     if not st.session_state.genome:
@@ -24,7 +71,6 @@ def render_fragmentation_section():
 
     genome = st.session_state.genome
 
-    # Metrics row
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Độ dài genome", f"{len(genome)} bp")
@@ -34,30 +80,33 @@ def render_fragmentation_section():
     with col3:
         st.metric("Số reads", len(st.session_state.reads) if st.session_state.reads else 0)
 
-    # Sequence visualization
     seq_viz = SequenceVisualizer()
     fig = seq_viz.render_sequence(genome, max_display=80, title="Genome gốc")
     st.plotly_chart(fig, use_container_width=True)
-
-    # Legend
     st.markdown(SequenceVisualizer.get_base_legend_html(), unsafe_allow_html=True)
 
-    # Reads display
+    # Coverage Map (View 5)
+    if st.session_state.get('read_positions'):
+        st.subheader("🛰️ Coverage Map")
+        st.caption("Mỗi read là một thanh ngang tại vị trí gốc. Vùng đỏ = coverage < 1×.")
+        fig_cov = render_coverage_map(len(genome), st.session_state.read_positions)
+        st.plotly_chart(fig_cov, use_container_width=True)
+
     if st.session_state.reads:
-        with st.expander(f"📖 Reads ({len(st.session_state.reads)} đoạn)", expanded=False):
-            reads = st.session_state.reads[:20]
-            cols = st.columns(5)
-            for i, read in enumerate(reads):
-                with cols[i % 5]:
-                    display = read if len(read) <= 10 else f"{read[:8]}..."
-                    st.code(f"R{i}: {display}", language=None)
+        with st.expander(f"📖 Danh sách reads ({len(st.session_state.reads)} đoạn)", expanded=False):
+            st.markdown(_render_reads_bars(st.session_state.reads, max_display=20),
+                        unsafe_allow_html=True)
             if len(st.session_state.reads) > 20:
                 st.caption(f"... và {len(st.session_state.reads) - 20} reads khác")
 
 
+# ===========================================================================
+# Section 2 — Assembly (3 cột + Action View)
+# ===========================================================================
+
 def render_assembly_section():
-    """Section 2: Thuật toán + Đồ thị side by side."""
-    st.header("🔬 Assembly")
+    """Section 2: Code | Graph | Distribution + Action View."""
+    st.header("🔬 Assembly từng bước")
 
     if not st.session_state.assembly_done:
         st.info("👈 Nhấn 'Chạy lắp ráp' ở sidebar để bắt đầu")
@@ -68,141 +117,315 @@ def render_assembly_section():
     if algo == "So sánh cả hai":
         tab_olc, tab_dbg = st.tabs(["🟦 OLC (Hamilton)", "🟩 DBG (Euler)"])
         with tab_olc:
-            _render_algo_pair("OLC", key_prefix="cmp_olc")
+            _render_algo_full("OLC", key_prefix="cmp_olc")
         with tab_dbg:
-            _render_algo_pair("DBG", key_prefix="cmp_dbg")
+            _render_algo_full("DBG", key_prefix="cmp_dbg")
     else:
-        _render_algo_pair(algo, key_prefix=algo.lower())
+        _render_algo_full(algo, key_prefix=algo.lower())
 
 
-def _render_algo_pair(algo: str, key_prefix: str):
-    """Render cặp panel thuật toán + đồ thị cho 1 thuật toán."""
-    col_algo, col_graph = st.columns([2, 3])
-
+def _get_controller(algo: str):
     if algo == "OLC":
-        controller = st.session_state.get('olc_animation_controller')
-    else:
-        controller = st.session_state.get('dbg_animation_controller')
-
-    with col_algo:
-        _render_algorithm_panel(controller, key_prefix=key_prefix)
-    with col_graph:
-        _render_graph_panel(algo)
+        return st.session_state.get('olc_animation_controller')
+    return st.session_state.get('dbg_animation_controller')
 
 
-def _render_algorithm_panel(controller, key_prefix: str = ""):
-    """Panel thuật toán với animation controls (nhận controller từ caller)."""
-    st.subheader("⚙️ Thuật toán từng bước")
-
+def _render_step_controls(controller, key_prefix: str):
+    """Step navigation row — đặt phía trên các panel."""
     if not controller or not controller.has_frames():
         st.warning("Không có dữ liệu animation")
         return
 
-    # Compact navigation buttons (key prefix để tránh xung đột giữa 2 tab compare)
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        if st.button("⏮️", key=f"{key_prefix}_first", disabled=controller.is_first,
+    cols = st.columns([1, 1, 1, 1, 6, 2])
+    with cols[0]:
+        if st.button("⏮", key=f"{key_prefix}_first", disabled=controller.is_first,
                      use_container_width=True, help="Về đầu"):
-            controller.reset()
-            st.rerun()
-    with c2:
-        if st.button("◀️", key=f"{key_prefix}_prev", disabled=controller.is_first,
-                     use_container_width=True, help="Trước"):
-            controller.prev_step()
-            st.rerun()
-    with c3:
-        if st.button("▶️", key=f"{key_prefix}_next", disabled=controller.is_last,
-                     use_container_width=True, help="Sau"):
-            controller.next_step()
-            st.rerun()
-    with c4:
-        if st.button("⏭️", key=f"{key_prefix}_last", disabled=controller.is_last,
-                     use_container_width=True, help="Về cuối"):
-            controller.go_to_end()
-            st.rerun()
-
-    step = st.slider(
-        "Bước:",
-        0, controller.total_frames - 1,
-        controller.current_index,
-        key=f"{key_prefix}_slider",
-        label_visibility="collapsed"
-    )
-    if step != controller.current_index:
-        controller.go_to_step(step)
-        st.rerun()
+            controller.reset(); st.rerun()
+    with cols[1]:
+        if st.button("◀", key=f"{key_prefix}_prev", disabled=controller.is_first,
+                     use_container_width=True, help="Bước trước"):
+            controller.prev_step(); st.rerun()
+    with cols[2]:
+        if st.button("▶", key=f"{key_prefix}_next", disabled=controller.is_last,
+                     use_container_width=True, help="Bước sau"):
+            controller.next_step(); st.rerun()
+    with cols[3]:
+        if st.button("⏭", key=f"{key_prefix}_last", disabled=controller.is_last,
+                     use_container_width=True, help="Đến cuối"):
+            controller.go_to_end(); st.rerun()
+    with cols[4]:
+        step = st.slider("Bước:", 0, controller.total_frames - 1,
+                         controller.current_index,
+                         key=f"{key_prefix}_slider", label_visibility="collapsed")
+        if step != controller.current_index:
+            controller.go_to_step(step); st.rerun()
+    with cols[5]:
+        st.caption(f"Bước **{controller.current_index + 1}** / {controller.total_frames}")
 
     st.progress(controller.progress)
-    st.caption(f"Bước {controller.current_index + 1} / {controller.total_frames}")
+
+
+def _phase_badge(phase: str) -> str:
+    """Badge tiếng Việt cho phase."""
+    names = {
+        'overlap': '🔍 Overlap',
+        'layout': '🛤️ Layout (Hamilton)',
+        'consensus': '🧬 Consensus',
+        'kmer': '🔤 K-mers',
+        'graph': '🕸️ Build graph',
+        'euler': '🛤️ Euler (Hierholzer)',
+        'reconstruct': '🧬 Reconstruct',
+    }
+    return names.get(phase, phase)
+
+
+def _render_algo_full(algo: str, key_prefix: str):
+    """Layout đầy đủ cho 1 thuật toán."""
+    controller = _get_controller(algo)
+    if not controller or not controller.has_frames():
+        st.warning(f"Không có dữ liệu {algo}")
+        return
+
+    # Step controls (hàng đầu)
+    _render_step_controls(controller, key_prefix)
 
     frame = controller.current_frame
+    raw_state = frame.extra_data.get('raw_state') if frame else None
+    # Đọc trực tiếp từ raw_state để giữ đúng tên phase ('layout' thay vì 'path'
+    # — AnimationController map 'layout' → AnimationPhase.PATH cho lý do lịch sử).
+    phase = getattr(raw_state, 'phase', '') if raw_state else ''
+
+    # Narration message
     if frame:
-        phase_names = {
-            'overlap': '🔍 Tìm Overlap',
-            'path': '🛤️ Tìm đường đi',
-            'consensus': '🧬 Ghép chuỗi',
-            'kmer': '🔤 Tạo k-mers',
-            'graph': '🕸️ Xây đồ thị',
-            'euler': '🛤️ Tìm đường Euler',
-            'reconstruct': '🧬 Tái tạo genome'
-        }
-        phase_display = phase_names.get(frame.phase.value, frame.phase.value)
-        st.info(f"**{phase_display}**\n\n{frame.message}")
+        st.info(f"**{_phase_badge(phase)}** — {frame.message}")
 
-    with st.expander("📊 Thống kê"):
-        summary = controller.get_phase_summary()
-        for phase, count in summary.items():
-            st.write(f"• {phase}: {count} bước")
+    # 2-cột top row
+    col_code, col_graph = st.columns([1.0, 1.5])
+
+    with col_code:
+        st.markdown("**📝 Code trace**")
+        backtrack = bool(getattr(raw_state, 'backtrack', False)) if raw_state else False
+        st.markdown(render_code_trace(algo, phase=phase,
+                                       message=frame.message if frame else '',
+                                       backtrack=backtrack),
+                    unsafe_allow_html=True)
+        st.markdown(_var_inspector_for(algo, raw_state, frame), unsafe_allow_html=True)
+
+    with col_graph:
+        st.markdown("**🕸️ Đồ thị (đồng bộ theo bước)**")
+        st.markdown(legend_html(), unsafe_allow_html=True)
+        _render_stepwise_graph(algo, raw_state, controller.current_index)
+
+    # Bottom: Action View
+    st.markdown("**🎬 Cơ chế (Action View)**")
+    _render_action_view(algo, raw_state, phase)
+
+    # PyVis detail (fallback / explorer mode)
+    with st.expander("🔍 Đồ thị PyVis chi tiết (pan/zoom đầy đủ)"):
+        _render_pyvis_graph(algo)
 
 
-def _render_graph_panel(algo: str):
-    """Panel đồ thị visualization (1 thuật toán)."""
-    st.subheader("🕸️ Đồ thị")
-    st.markdown(GraphVisualizer.get_legend_html(), unsafe_allow_html=True)
+# ---------- Stepwise graph ----------
 
+def _olc_state_dict(raw_state, *, visible_overlaps: int) -> dict:
+    if raw_state is None:
+        return {}
+    return {
+        'phase': getattr(raw_state, 'phase', None),
+        'current_pair': getattr(raw_state, 'current_pair', (None, None)),
+        'path': list(getattr(raw_state, 'path', []) or []),
+        'visited': set(getattr(raw_state, 'visited', set()) or set()),
+        'visible_overlaps': visible_overlaps,
+        'backtrack': bool(getattr(raw_state, 'backtrack', False)),
+    }
+
+
+def _dbg_state_dict(raw_state) -> dict:
+    if raw_state is None:
+        return {}
+    return {
+        'phase': getattr(raw_state, 'phase', None),
+        'current_node': getattr(raw_state, 'current_node', '') or '',
+        'next_node': getattr(raw_state, 'next_node', '') or '',
+        'visited_edges': list(getattr(raw_state, 'visited_edges', []) or []),
+        'path': list(getattr(raw_state, 'path', []) or []),
+    }
+
+
+def _render_stepwise_graph(algo: str, raw_state, step_idx: int):
+    if algo == "OLC":
+        assembler = st.session_state.get('olc_assembler')
+        if not assembler:
+            st.warning("Chưa có dữ liệu OLC"); return
+        overlaps_all = [(o.read_a, o.read_b, o.length) for o in assembler.overlaps]
+        # During overlap phase, only show overlaps already found
+        visible = len(overlaps_all)
+        if raw_state and getattr(raw_state, 'phase', '') == 'overlap':
+            visible = len(getattr(raw_state, 'overlaps_found', []) or [])
+        fig = render_olc_graph(
+            reads=assembler.reads,
+            overlaps=overlaps_all,
+            state=_olc_state_dict(raw_state, visible_overlaps=visible),
+            height=380,
+        )
+        st.plotly_chart(fig, use_container_width=True, key=f"olc_graph_{step_idx}")
+        st.caption(f"📊 {len(assembler.reads)} nodes · {len(overlaps_all)} edges (cumulative)")
+
+    else:
+        assembler = st.session_state.get('dbg_assembler')
+        if not assembler:
+            st.warning("Chưa có dữ liệu DBG"); return
+        # During kmer phase, graph chưa được xây — hiển thị graph cuối làm nền dim
+        fig = render_dbg_graph(
+            graph=dict(assembler.graph),
+            state=_dbg_state_dict(raw_state),
+            height=380,
+        )
+        st.plotly_chart(fig, use_container_width=True, key=f"dbg_graph_{step_idx}")
+        stats = assembler.get_graph_stats()
+        st.caption(f"📊 {stats['num_nodes']} nodes · {stats['num_edges']} edges · k={stats['k']}")
+
+
+def _render_pyvis_graph(algo: str):
     graph_viz = GraphVisualizer(height="380px")
     if algo == "OLC":
-        _render_olc_graph(graph_viz, height=400)
+        a = st.session_state.get('olc_assembler')
+        if not a:
+            st.warning("Chưa có dữ liệu OLC"); return
+        ov = [(o.read_a, o.read_b, o.length) for o in a.overlaps]
+        html = graph_viz.render_overlap_graph(reads=a.reads, overlaps=ov, path=a.path)
+        components.html(html, height=400, scrolling=True)
     else:
-        _render_dbg_graph(graph_viz, height=400)
+        a = st.session_state.get('dbg_assembler')
+        if not a:
+            st.warning("Chưa có dữ liệu DBG"); return
+        html = graph_viz.render_debruijn_graph(graph=dict(a.graph), path=a.path)
+        components.html(html, height=400, scrolling=True)
 
 
-def _render_olc_graph(graph_viz, height=400):
-    """Render OLC overlap graph."""
-    assembler = st.session_state.olc_assembler
-    if not assembler:
-        st.warning("Chưa có dữ liệu OLC")
+# ---------- Action View ----------
+
+def _render_action_view(algo: str, raw_state, phase: str):
+    if raw_state is None:
+        st.markdown('<div style="padding:8px;color:#888;">(không có state)</div>',
+                    unsafe_allow_html=True)
         return
 
-    overlaps = [(o.read_a, o.read_b, o.length) for o in assembler.overlaps]
-    html = graph_viz.render_overlap_graph(
-        reads=assembler.reads,
-        overlaps=overlaps,
-        path=assembler.path
-    )
-    components.html(html, height=height, scrolling=True)
-    st.caption(f"📊 {len(assembler.reads)} nodes, {len(overlaps)} edges")
+    if algo == "OLC":
+        a = st.session_state.get('olc_assembler')
+        if not a:
+            return
+
+        if phase == 'overlap':
+            i, j = getattr(raw_state, 'current_pair', (0, 0))
+            ov_len = getattr(raw_state, 'overlap_length', 0)
+            if 0 <= i < len(a.reads) and 0 <= j < len(a.reads):
+                html = render_overlap_alignment(
+                    a.reads[i], a.reads[j], ov_len, label_a=f"R{i}", label_b=f"R{j}")
+                st.markdown(html, unsafe_allow_html=True)
+
+        elif phase == 'layout':
+            path = list(getattr(raw_state, 'path', []) or [])
+            visited = set(getattr(raw_state, 'visited', set()) or set())
+            backtrack = bool(getattr(raw_state, 'backtrack', False))
+            cp = getattr(raw_state, 'current_pair', None)
+            html = render_layout_breadcrumb(
+                path, visited, len(a.reads), backtrack=backtrack, current_pair=cp)
+            st.markdown(html, unsafe_allow_html=True)
+
+        elif phase == 'consensus':
+            # Find current step index in path (số read đã ghép)
+            path = list(a.path)
+            consensus = getattr(raw_state, 'consensus_so_far', '') or ''
+            overlaps_map = {(o.read_a, o.read_b): o.length for o in a.overlaps}
+            # Determine current step: count consensus phase states up to this state
+            # Simpler heuristic: current head = read whose merge_offset matches state
+            cur_step = 0
+            cp = getattr(raw_state, 'current_pair', None)
+            if cp and cp[1] in path:
+                cur_step = path.index(cp[1])
+            html = render_consensus_stack(
+                a.reads, path, overlaps_map, current_step=cur_step, consensus=consensus)
+            st.markdown(html, unsafe_allow_html=True)
+
+    else:  # DBG
+        a = st.session_state.get('dbg_assembler')
+        if not a:
+            return
+
+        if phase == 'kmer':
+            read_idx = getattr(raw_state, 'read_index', -1)
+            pos = getattr(raw_state, 'window_pos', -1)
+            if 0 <= read_idx < len(a.reads):
+                tray = list(a.kmers.keys())[:60]  # approx tray
+                html = render_sliding_window(
+                    a.reads[read_idx], a.k, pos, read_index=read_idx, kmer_tray=tray)
+                st.markdown(html, unsafe_allow_html=True)
+
+        elif phase == 'graph':
+            st.markdown(
+                f'<div style="padding:8px;background:#FAFAFA;border-radius:6px;">'
+                f'Mỗi k-mer trở thành <b>cạnh</b>: prefix (k-1)-mer → suffix (k-1)-mer. '
+                f'Đồ thị hoàn thành với <b>{len(a.graph)}</b> đỉnh nguồn, '
+                f'<b>{sum(len(v) for v in a.graph.values())}</b> cạnh.'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+        elif phase == 'euler':
+            stack = list(getattr(raw_state, 'stack_snapshot', []) or [])
+            cur = getattr(raw_state, 'current_node', '') or ''
+            nxt = getattr(raw_state, 'next_node', '') or ''
+            er = getattr(raw_state, 'edges_remaining', 0) or 0
+            et = getattr(raw_state, 'edges_total', 0) or 0
+            html = render_hierholzer_stack(stack, cur, nxt, er, et)
+            st.markdown(html, unsafe_allow_html=True)
+
+        elif phase == 'reconstruct':
+            genome = getattr(raw_state, 'genome_so_far', '') or ''
+            cur = getattr(raw_state, 'current_node', '') or ''
+            html = render_reconstruct_progress(genome, cur, a.k)
+            st.markdown(html, unsafe_allow_html=True)
 
 
-def _render_dbg_graph(graph_viz, height=400):
-    """Render DBG de Bruijn graph."""
-    assembler = st.session_state.dbg_assembler
-    if not assembler:
-        st.warning("Chưa có dữ liệu DBG")
-        return
+# ---------- Variable inspector ----------
 
-    stats = assembler.get_graph_stats()
-    html = graph_viz.render_debruijn_graph(
-        graph=dict(assembler.graph),
-        path=assembler.path
-    )
-    components.html(html, height=height, scrolling=True)
-    st.caption(f"📊 {stats['num_nodes']} nodes, {stats['num_edges']} edges, k={stats['k']}")
+def _var_inspector_for(algo: str, raw_state, frame) -> str:
+    if raw_state is None:
+        return render_var_inspector({})
+    vars_dict = {}
+    if algo == "OLC":
+        cp = getattr(raw_state, 'current_pair', None)
+        vars_dict['phase'] = getattr(raw_state, 'phase', '')
+        vars_dict['current_pair'] = f"R{cp[0]} → R{cp[1]}" if cp and cp[0] is not None else "—"
+        vars_dict['overlap_length'] = getattr(raw_state, 'overlap_length', 0)
+        path = list(getattr(raw_state, 'path', []) or [])
+        vars_dict['len(path)'] = len(path)
+        vars_dict['path[-3:]'] = ' → '.join(f"R{p}" for p in path[-3:]) if path else '—'
+        vars_dict['len(visited)'] = len(getattr(raw_state, 'visited', set()) or set())
+        vars_dict['backtrack'] = getattr(raw_state, 'backtrack', False)
+    else:
+        vars_dict['phase'] = getattr(raw_state, 'phase', '')
+        vars_dict['current_node'] = getattr(raw_state, 'current_node', '') or '—'
+        vars_dict['next_node'] = getattr(raw_state, 'next_node', '') or '—'
+        vars_dict['current_kmer'] = getattr(raw_state, 'current_kmer', '') or '—'
+        vars_dict['window_pos'] = getattr(raw_state, 'window_pos', -1)
+        et = getattr(raw_state, 'edges_total', 0)
+        er = getattr(raw_state, 'edges_remaining', 0)
+        if et > 0:
+            vars_dict['edges_visited'] = f"{et - er}/{et}"
+        vars_dict['len(stack)'] = len(getattr(raw_state, 'stack_snapshot', []) or [])
+        vars_dict['|genome_so_far|'] = len(getattr(raw_state, 'genome_so_far', '') or '')
+    return render_var_inspector(vars_dict)
 
+
+# ===========================================================================
+# Section 3 — Kết quả
+# ===========================================================================
 
 def render_results_section():
     """Section 3: Kết quả lắp ráp."""
-    st.header("📊 Kết quả lắp ráp")
+    st.header("📊 Kết quả")
 
     genome = st.session_state.genome
     algo = st.session_state.algorithm
@@ -217,7 +440,6 @@ def render_results_section():
 
 
 def _render_single_result(name: str, result: str, genome: str, seq_viz):
-    """Render result for single algorithm."""
     if not result:
         st.warning(f"Không có kết quả {name}")
         return
@@ -227,35 +449,30 @@ def _render_single_result(name: str, result: str, genome: str, seq_viz):
                else st.session_state.dbg_time_ms)
     nodes, edges = _graph_stats(name)
 
-    # Metrics row
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Genome gốc", f"{len(genome)} bp")
     with col2:
-        st.metric(f"Kết quả {name}",
-                  f"{len(result)} bp",
+        st.metric(f"Kết quả {name}", f"{len(result)} bp",
                   f"{len(result) / len(genome) * 100:.0f}% covered")
     with col3:
         st.metric("Độ chính xác", f"{accuracy}%")
     with col4:
         st.metric("Thời gian", _format_time(time_ms))
 
-    # Complexity + graph stats
     complexity = _complexity_label(name)
     st.caption(f"📐 **{complexity}** · đồ thị: {nodes} đỉnh / {edges} cạnh")
 
-    # Alignment view
-    fig = seq_viz.render_alignment(genome, result, max_display=60)
-    st.plotly_chart(fig, use_container_width=True)
+    with st.expander("📊 Alignment bar (kiểu cũ)"):
+        fig = seq_viz.render_alignment(genome, result, max_display=60)
+        st.plotly_chart(fig, use_container_width=True)
 
-    # Raw sequences
     with st.expander("🔤 Xem chuỗi thô"):
         st.text_area("Genome gốc:", genome[:500], height=60, disabled=True)
         st.text_area(f"Kết quả {name}:", result[:500], height=60, disabled=True)
 
 
 def _render_comparison_results(genome: str, seq_viz):
-    """Render comparison between OLC and DBG."""
     olc_result = st.session_state.olc_result
     dbg_result = st.session_state.dbg_result
 
@@ -268,7 +485,6 @@ def _render_comparison_results(genome: str, seq_viz):
     olc_nodes, olc_edges = _graph_stats("OLC")
     dbg_nodes, dbg_edges = _graph_stats("DBG")
 
-    # Metrics row
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Genome gốc", f"{len(genome)} bp")
@@ -279,7 +495,6 @@ def _render_comparison_results(genome: str, seq_viz):
         st.metric("DBG", f"{len(dbg_result)} bp",
                   f"{dbg_acc}% • {_format_time(dbg_t)}")
 
-    # Complexity caption
     st.caption(
         f"📐 OLC **{_complexity_label('OLC')}** vs DBG **{_complexity_label('DBG')}** · "
         f"`n` = số reads, `m` = read length, `V/E` = đỉnh/cạnh đồ thị"
@@ -290,114 +505,35 @@ def _render_comparison_results(genome: str, seq_viz):
         elif speedup <= 0.8:
             st.caption(f"⚡ Trong run này OLC nhanh hơn DBG **{1/speedup:.1f}×** (graph quá nhỏ để O(n²) lộ).")
         else:
-            st.caption(f"⚡ Runtime gần như tương đương ({speedup:.2f}×) — kích thước input chưa đủ tách 2 thuật toán.")
+            st.caption(f"⚡ Runtime gần như tương đương ({speedup:.2f}×).")
 
-    # Side by side alignment
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("OLC vs Gốc")
-        if olc_result:
-            fig = seq_viz.render_alignment(genome, olc_result, max_display=35)
-            st.plotly_chart(fig, use_container_width=True)
+    # Phase Timeline (View 6)
+    olc_timing = _get_timing("OLC")
+    dbg_timing = _get_timing("DBG")
+    if olc_timing or dbg_timing:
+        st.subheader("⏱️ Phase Timeline")
+        fig = render_phase_timeline(olc_timing, dbg_timing)
+        st.plotly_chart(fig, use_container_width=True)
 
-    with col2:
-        st.subheader("DBG vs Gốc")
-        if dbg_result:
-            fig = seq_viz.render_alignment(genome, dbg_result, max_display=35)
-            st.plotly_chart(fig, use_container_width=True)
-
-    # Parameter context caption
     st.caption(
         "🔧 Tham số: "
         f"genome={len(genome)} bp · "
         f"reads={len(st.session_state.reads)} × {st.session_state.read_length} bp "
-        f"(coverage {st.session_state.coverage}× tự động) · "
+        f"(coverage {st.session_state.coverage}×) · "
         f"OLC min_overlap={st.session_state.min_overlap} · "
         f"DBG k={st.session_state.k_value}"
     )
 
-    # Summary table
-    st.subheader("Bảng tổng hợp")
-    st.table({
-        "Thuật toán": ["OLC (Hamilton)", "DBG (Euler)"],
-        "Độ dài (bp)": [len(olc_result), len(dbg_result)],
-        "% covered": [
-            f"{len(olc_result) / len(genome) * 100:.0f}%",
-            f"{len(dbg_result) / len(genome) * 100:.0f}%"
-        ],
-        "Chính xác (%)": [olc_acc, dbg_acc],
-        "Thời gian": [_format_time(olc_t), _format_time(dbg_t)],
-        "Đỉnh đồ thị": [olc_nodes, dbg_nodes],
-        "Cạnh đồ thị": [olc_edges, dbg_edges],
-    })
 
-    _render_comparison_insight(
-        olc_acc=olc_acc, dbg_acc=dbg_acc,
-        olc_t=olc_t, dbg_t=dbg_t,
-        olc_edges=olc_edges, dbg_edges=dbg_edges,
-    )
-
-
-def _render_comparison_insight(*, olc_acc, dbg_acc, olc_t, dbg_t, olc_edges, dbg_edges):
-    """Nhận xét tự động dựa trên metric so sánh."""
-    notes = []
-
-    if dbg_t > 0 and olc_t > dbg_t * 3:
-        notes.append(
-            f"⏱️ DBG nhanh hơn OLC ~{olc_t/dbg_t:.1f}× — "
-            "nhất quán với độ phức tạp O(n) thay vì O(n²·m²) khi tính overlap từng cặp."
-        )
-    elif olc_t > 0 and dbg_t > olc_t * 1.5:
-        notes.append(
-            f"⏱️ Bất ngờ: DBG chậm hơn OLC ~{dbg_t/olc_t:.1f}× — "
-            "thường do k cao tạo ít k-mer hữu ích hoặc số reads quá nhỏ."
-        )
-
-    if olc_edges > dbg_edges * 2 and olc_edges > 0:
-        notes.append(
-            f"🕸️ Đồ thị OLC dày hơn DBG ({olc_edges} vs {dbg_edges} cạnh) — "
-            "OLC so từng cặp reads, DBG gom k-mer trùng nên cấu trúc gọn hơn."
-        )
-    elif dbg_edges > olc_edges * 2 and dbg_edges > 0:
-        notes.append(
-            f"🕸️ Đồ thị DBG có nhiều cạnh hơn OLC ({dbg_edges} vs {olc_edges}) — "
-            "thường xảy ra khi k nhỏ, mỗi read sinh nhiều k-mer."
-        )
-
-    if olc_acc - dbg_acc >= 5:
-        notes.append(
-            f"🎯 OLC khôi phục đầy đủ hơn (+{olc_acc - dbg_acc:.1f}%) — "
-            "có thể k đang lớn so với read length, làm DBG mất k-mer hữu ích."
-        )
-    elif dbg_acc - olc_acc >= 5:
-        notes.append(
-            f"🎯 DBG khôi phục đầy đủ hơn (+{dbg_acc - olc_acc:.1f}%) — "
-            "có thể min_overlap quá khắt khe, làm OLC bỏ qua nhiều cạnh hợp lệ."
-        )
-    elif abs(olc_acc - dbg_acc) < 3:
-        notes.append(
-            "🎯 Hai thuật toán khôi phục tương đương — "
-            "trong điều kiện 'lý tưởng' khác biệt chủ yếu nằm ở chi phí tính toán."
-        )
-
-    if not notes:
-        return
-
-    with st.container(border=True):
-        st.markdown("**🔎 Nhận xét tự động**")
-        for n in notes:
-            st.markdown(f"- {n}")
-
+# ---------- Helpers ----------
 
 def _complexity_label(name: str) -> str:
-    """Nhãn độ phức tạp lý thuyết."""
     if name == "OLC":
         return "O(n²·m²)"
     return "O(n·m + V+E)"
 
 
 def _graph_stats(name: str):
-    """(num_nodes, num_edges) cho thuật toán."""
     if name == "OLC":
         a = st.session_state.get('olc_assembler')
         if not a:
@@ -410,8 +546,15 @@ def _graph_stats(name: str):
     return s.get('num_nodes', 0), s.get('num_edges', 0)
 
 
+def _get_timing(name: str) -> Optional[dict]:
+    if name == "OLC":
+        a = st.session_state.get('olc_assembler')
+    else:
+        a = st.session_state.get('dbg_assembler')
+    return getattr(a, 'timing_ms', None) if a else None
+
+
 def _format_time(ms: float) -> str:
-    """Format thời gian: <1ms hiện μs, <1000ms hiện ms, >=1000ms hiện s."""
     if ms <= 0:
         return "—"
     if ms < 1:
@@ -419,3 +562,5 @@ def _format_time(ms: float) -> str:
     if ms < 1000:
         return f"{ms:.1f} ms"
     return f"{ms / 1000:.2f} s"
+
+

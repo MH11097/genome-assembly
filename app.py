@@ -7,6 +7,12 @@ Demo Lắp Ráp Genome - Main Streamlit Application
 - DBG (de Bruijn Graph) - đường đi Euler
 """
 
+# Import pandas TRƯỚC plotly để pandas init xong trước khi plotly cần pd.Series.
+# Không có dòng này, một số tổ hợp pandas 2.x + plotly gây ra
+# "partially initialized module 'pandas' has no attribute 'Series'" trong
+# go.Bar/go.Scatter validation.
+import pandas as _pd_preload  # noqa: F401
+
 import streamlit as st
 from src.ui.controls import render_sidebar
 from src.ui.sections import (
@@ -14,6 +20,7 @@ from src.ui.sections import (
     render_assembly_section,
     render_results_section
 )
+from src.ui.spotlight import render_spotlight
 
 # Page config
 st.set_page_config(
@@ -29,9 +36,11 @@ def init_session_state():
     defaults = {
         'genome': '',
         'reads': [],
+        'read_positions': [],   # list[(start, end, index)] cho Coverage Map
         'algorithm': 'OLC',
         'read_length': 50,
         'coverage': 0,  # dẫn xuất tại runtime, chỉ giữ để hiển thị
+        'preset_coverage': None,  # override coverage khi load preset
         'min_overlap': 10,
         'k_value': 11,
         'olc_assembler': None,
@@ -43,7 +52,7 @@ def init_session_state():
         'olc_animation_controller': None,
         'dbg_animation_controller': None,
         'step_index': 0,
-        'assembly_done': False
+        'assembly_done': False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -76,6 +85,9 @@ def main():
     # Footer
     st.divider()
     st.caption("🎓 Ứng dụng giáo dục - Demo genome assembly algorithms")
+
+    # Spotlight onboarding (lần đầu mở app); inject sau khi DOM đầy đủ.
+    render_spotlight()
 
 
 if __name__ == "__main__":

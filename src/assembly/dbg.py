@@ -21,6 +21,14 @@ class DBGState:
     step: int
     current_kmer: str = ""
     current_node: str = ""
+    next_node: str = ""              # Node sắp đi tới (phase euler)
+    read_index: int = -1             # Read đang được xử lý (phase kmer)
+    window_pos: int = -1             # Vị trí sliding window trên read (phase kmer)
+    stack_snapshot: List[str] = field(default_factory=list)  # Hierholzer stack
+    edges_remaining: int = -1        # Cạnh còn lại (phase euler)
+    edges_total: int = -1
+    visited_edges: List[Tuple[str, str]] = field(default_factory=list)
+    genome_so_far: str = ""          # Genome đang xây (phase reconstruct)
     graph: Dict[str, List[str]] = field(default_factory=dict)
     path: List[str] = field(default_factory=list)
     message: str = ""
@@ -36,30 +44,35 @@ class DBGAssembler:
     - Tìm đường Euler (polynomial) thay vì Hamilton (NP-hard)
     """
 
-    def __init__(self, reads: List[str], k: int = 11):
+    def __init__(self, reads: List[str], k: int = 11, max_states: Optional[int] = None):
         self.reads = reads
         self.k = k
+        self.max_states = max_states  # None = không giới hạn (cho demo nhỏ)
         self.kmers: Dict[str, int] = {}
         self.graph: Dict[str, List[str]] = defaultdict(list)
         self.in_degree: Dict[str, int] = defaultdict(int)
         self.out_degree: Dict[str, int] = defaultdict(int)
         self.path: List[str] = []
         self._states: List[DBGState] = []
+        # Per-phase timing (ms) – đặt bởi assemble()
+        self.timing_ms: Dict[str, float] = {}
 
     def generate_kmers(self) -> Dict[str, int]:
         """Bước 1: Tạo k-mers từ tất cả reads."""
         self.kmers = defaultdict(int)
 
-        for read in self.reads:
+        for read_idx, read in enumerate(self.reads):
             for i in range(len(read) - self.k + 1):
                 kmer = read[i:i + self.k]
                 self.kmers[kmer] += 1
 
-                if len(self._states) < 50:  # Limit states for visualization
+                if self.max_states is None or len(self._states) < self.max_states:
                     self._states.append(DBGState(
                         phase='kmer', step=len(self._states),
                         current_kmer=kmer,
-                        message=f"Tạo k-mer: {kmer}"
+                        read_index=read_idx,
+                        window_pos=i,
+                        message=f"Read R{read_idx}[{i}:{i+self.k}] → k-mer {kmer}"
                     ))
 
         return dict(self.kmers)
@@ -129,22 +142,42 @@ class DBGAssembler:
         graph_copy = {k: v[:] for k, v in self.graph.items()}
         stack = [start]
         path = []
+        edges_total = sum(len(v) for v in self.graph.values())
+        visited_edges: List[Tuple[str, str]] = []
 
         while stack:
             current = stack[-1]
             if graph_copy.get(current):
                 next_node = graph_copy[current].pop()
                 stack.append(next_node)
+                visited_edges.append((current, next_node))
 
-                if len(self._states) < 100:
+                if self.max_states is None or len(self._states) < self.max_states:
                     self._states.append(DBGState(
                         phase='euler', step=len(self._states),
                         current_node=current,
+                        next_node=next_node,
+                        stack_snapshot=stack[:],
+                        edges_remaining=edges_total - len(visited_edges),
+                        edges_total=edges_total,
+                        visited_edges=visited_edges[:],
                         path=path[:],
-                        message=f"Di chuyển: {current} → {next_node}"
+                        message=f"Đi cạnh {current} → {next_node}  ({len(visited_edges)}/{edges_total})"
                     ))
             else:
-                path.append(stack.pop())
+                popped = stack.pop()
+                path.append(popped)
+                if self.max_states is None or len(self._states) < self.max_states:
+                    self._states.append(DBGState(
+                        phase='euler', step=len(self._states),
+                        current_node=popped,
+                        stack_snapshot=stack[:],
+                        edges_remaining=edges_total - len(visited_edges),
+                        edges_total=edges_total,
+                        visited_edges=visited_edges[:],
+                        path=path[:],
+                        message=f"Hết cạnh tại {popped} → đẩy vào path"
+                    ))
 
         self.path = path[::-1]
         return self.path
@@ -155,24 +188,50 @@ class DBGAssembler:
             return ""
 
         genome = self.path[0]
-        for node in self.path[1:]:
-            genome += node[-1]  # Thêm ký tự cuối của mỗi (k-1)-mer
-
+        # State đầu: chỉ có (k-1)-mer đầu tiên
         self._states.append(DBGState(
             phase='reconstruct', step=len(self._states),
+            current_node=self.path[0],
             path=self.path,
-            message=f"Genome: {len(genome)} bp"
+            genome_so_far=genome,
+            message=f"Khởi tạo bằng {self.path[0]} ({len(genome)} bp)"
         ))
+
+        for idx, node in enumerate(self.path[1:], start=1):
+            genome += node[-1]
+            self._states.append(DBGState(
+                phase='reconstruct', step=len(self._states),
+                current_node=node,
+                path=self.path,
+                genome_so_far=genome,
+                message=f"Thêm '{node[-1]}' từ {node} → genome {len(genome)} bp"
+            ))
 
         return genome
 
     def assemble(self) -> str:
-        """Chạy toàn bộ pipeline DBG."""
+        """Chạy toàn bộ pipeline DBG, đo timing từng phase."""
+        import time
         self._states = []
+        self.timing_ms = {}
+
+        t0 = time.perf_counter()
         self.generate_kmers()
+        self.timing_ms['kmer'] = (time.perf_counter() - t0) * 1000.0
+
+        t0 = time.perf_counter()
         self.build_debruijn_graph()
+        self.timing_ms['graph'] = (time.perf_counter() - t0) * 1000.0
+
+        t0 = time.perf_counter()
         self.find_eulerian_path()
-        return self.reconstruct_genome()
+        self.timing_ms['euler'] = (time.perf_counter() - t0) * 1000.0
+
+        t0 = time.perf_counter()
+        result = self.reconstruct_genome()
+        self.timing_ms['reconstruct'] = (time.perf_counter() - t0) * 1000.0
+
+        return result
 
     def get_step_states(self) -> List[DBGState]:
         """Lấy states cho visualization."""

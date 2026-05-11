@@ -16,17 +16,17 @@ class SequenceVisualizer:
     Hiển thị chuỗi DNA với màu sắc.
 
     Color scheme cho bases:
-    - A: Green (#4CAF50)
-    - T: Red (#F44336)
-    - G: Yellow (#FFC107)
-    - C: Blue (#2196F3)
+    - A: Red (#e63946)
+    - T: Orange (#f4a261)
+    - G: Teal (#2a9d8f)
+    - C: Dark slate (#264653)
     """
 
     BASE_COLORS = {
-        'A': '#4CAF50',
-        'T': '#F44336',
-        'G': '#FFC107',
-        'C': '#2196F3',
+        'A': '#e63946',
+        'T': '#f4a261',
+        'G': '#2a9d8f',
+        'C': '#264653',
     }
 
     def render_sequence(
@@ -244,9 +244,9 @@ class SequenceVisualizer:
         return """
         <div style="display: flex; gap: 15px; padding: 8px; background: #f5f5f5;
                     border-radius: 5px; font-size: 12px; font-family: monospace; color: #333;">
-            <span><span style="color: #4CAF50; font-weight: bold;">■</span> A (Adenine)</span>
-            <span><span style="color: #F44336; font-weight: bold;">■</span> T (Thymine)</span>
-            <span><span style="color: #FFC107; font-weight: bold;">■</span> G (Guanine)</span>
-            <span><span style="color: #2196F3; font-weight: bold;">■</span> C (Cytosine)</span>
+            <span><span style="color: #e63946; font-weight: bold;">■</span> A (Adenine)</span>
+            <span><span style="color: #f4a261; font-weight: bold;">■</span> T (Thymine)</span>
+            <span><span style="color: #2a9d8f; font-weight: bold;">■</span> G (Guanine)</span>
+            <span><span style="color: #264653; font-weight: bold;">■</span> C (Cytosine)</span>
         </div>
         """

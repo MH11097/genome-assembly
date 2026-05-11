@@ -129,6 +129,8 @@ def render_sidebar():
     
     st.sidebar.header("⚙️ Điều khiển")
 
+    _render_presets()
+
     _render_genome_input()
 
     _render_read_params()
@@ -137,11 +139,89 @@ def render_sidebar():
 
     _render_run_button()
 
+    from src.ui.spotlight import render_replay_button
+    render_replay_button()
+
 
 # Demo tập trung vào tham số thuật toán (read_length, min_overlap, k) chứ
 # không vào tham số sequencing → seed hardcode, coverage dẫn xuất tự động.
 _FIXED_SEED = 42
 _TARGET_NUM_READS = 80  # số reads target khi tính coverage tự động
+
+
+# 3 preset story đã verify qua test multi-seed:
+# - Baseline: G=100, L=20, C=15× → cả 2 đều ≥90% (sanity check)
+# - Illumina: G=200, L=15, C=12× → DBG ≥96%, OLC <50% (short reads favor DBG)
+# - PacBio+Repeats: G=400 có repeats, L=80, C=10× → OLC ~94%, DBG ~63% (long reads + repeat collapse favor OLC)
+_PRESETS = {
+    "baseline": {
+        "label": "🟢 Baseline",
+        "tooltip": "G=100, L=20, C=15× — cả OLC & DBG đều tốt (sanity check)",
+        "genome_kind": "random",
+        "genome_length": 100,
+        "read_length": 20,
+        "coverage": 15,
+        "min_overlap": 8,
+        "k_value": 7,
+    },
+    "illumina": {
+        "label": "🔵 Illumina (DBG wins)",
+        "tooltip": "G=200, L=15, C=12× — short reads nhiều → DBG ưu thế",
+        "genome_kind": "random",
+        "genome_length": 200,
+        "read_length": 15,
+        "coverage": 12,
+        "min_overlap": 8,
+        "k_value": 9,
+    },
+    "pacbio": {
+        "label": "🟣 PacBio + Repeats (OLC wins)",
+        "tooltip": "G=400 có 3 vùng repeat, L=80, C=10× — DBG vỡ do k-mer dedupe, OLC qua được",
+        "genome_kind": "repeats",
+        "genome_length": 400,
+        "read_length": 80,
+        "coverage": 10,
+        "min_overlap": 22,
+        "k_value": 15,
+        "repeat_unit": "GATCG",
+        "num_copies": 4,
+        "num_repeat_regions": 3,
+    },
+}
+
+
+def _apply_preset(key: str):
+    """Load preset config vào session_state. Không auto-run, user bấm ▶️ để chạy."""
+    p = _PRESETS[key]
+    gen = GenomeGenerator(seed=_FIXED_SEED)
+    if p["genome_kind"] == "repeats":
+        genome = gen.generate_with_repeats(
+            length=p["genome_length"],
+            repeat_unit=p["repeat_unit"],
+            num_copies=p["num_copies"],
+            num_repeat_regions=p["num_repeat_regions"],
+        )
+    else:
+        genome = gen.generate_random(p["genome_length"])
+
+    st.session_state.genome = genome
+    st.session_state.read_length = p["read_length"]
+    st.session_state.min_overlap = p["min_overlap"]
+    st.session_state.k_value = p["k_value"]
+    st.session_state.preset_coverage = p["coverage"]
+    st.session_state.algorithm = "So sánh cả hai"
+    st.session_state.assembly_done = False
+
+
+def _render_presets():
+    """3 preset buttons cho demo nhanh."""
+    st.sidebar.subheader("🎯 Preset demo")
+    for key, p in _PRESETS.items():
+        if st.sidebar.button(
+            p["label"], use_container_width=True, help=p["tooltip"], key=f"preset_{key}"
+        ):
+            _apply_preset(key)
+            st.rerun()
 
 
 def _derive_coverage(genome_len: int, read_length: int) -> int:
@@ -177,6 +257,7 @@ def _render_genome_input():
             cleaned = clean_sequence(genome_input)
             if validate_dna(cleaned):
                 st.session_state.genome = cleaned
+                st.session_state.preset_coverage = None  # quay lại auto-derive
                 st.sidebar.success(f"✅ {len(cleaned)} bp")
             else:
                 st.sidebar.error("⚠️ Chuỗi không hợp lệ!")
@@ -188,6 +269,7 @@ def _render_genome_input():
             gen = GenomeGenerator()
             st.session_state.genome = gen.generate_random(length)
             st.session_state.assembly_done = False
+            st.session_state.preset_coverage = None  # quay lại auto-derive
             st.rerun()
 
     else:  # Virus examples
@@ -198,6 +280,7 @@ def _render_genome_input():
         if st.sidebar.button("📥 Tải genome", use_container_width=True):
             st.session_state.genome = gen.load_virus_example(selected)
             st.session_state.assembly_done = False
+            st.session_state.preset_coverage = None  # quay lại auto-derive
             st.rerun()
 
     # Display genome info
@@ -209,16 +292,20 @@ def _render_read_params():
     """Section tham số read."""
     st.sidebar.subheader("📖 Tham số đọc")
 
-    st.session_state.read_length = st.sidebar.slider(
-        "Độ dài read (bp):", 10, 200,
-        value=int(st.session_state.get("read_length", 50)), step=5
+    # Dùng key= để slider bind 2 chiều với session_state → preset cập nhật được
+    st.sidebar.slider(
+        "Độ dài read (bp):", 10, 200, step=5, key="read_length"
     )
 
-    # Estimate reads count (coverage dẫn xuất từ read_length + genome_len)
+    # Estimate reads count (coverage = preset override hoặc tự động dẫn xuất)
     if st.session_state.genome:
-        cov = _derive_coverage(len(st.session_state.genome), st.session_state.read_length)
+        preset_cov = st.session_state.get("preset_coverage")
+        cov = preset_cov if preset_cov else _derive_coverage(
+            len(st.session_state.genome), st.session_state.read_length
+        )
         est_reads = (len(st.session_state.genome) * cov) // st.session_state.read_length
-        st.sidebar.caption(f"~{est_reads} reads · coverage tự động {cov}×")
+        cov_label = f"preset {cov}×" if preset_cov else f"tự động {cov}×"
+        st.sidebar.caption(f"~{est_reads} reads · coverage {cov_label}")
 
 
 def _render_algorithm_selection():
@@ -226,32 +313,19 @@ def _render_algorithm_selection():
     st.sidebar.subheader("🔬 Thuật toán")
 
     algo_options = ["OLC", "DBG", "So sánh cả hai"]
-    current_algo = st.session_state.get("algorithm", "OLC")
-    algo_idx = algo_options.index(current_algo) if current_algo in algo_options else 0
-    st.session_state.algorithm = st.sidebar.radio(
-        "Chọn:",
-        algo_options,
-        index=algo_idx,
-        horizontal=True
+    st.sidebar.radio(
+        "Chọn:", algo_options, horizontal=True, key="algorithm"
     )
 
     # OLC params
     if st.session_state.algorithm in ["OLC", "So sánh cả hai"]:
-        st.session_state.min_overlap = st.sidebar.slider(
-            "Min overlap (OLC):", 3, 80,
-            value=int(st.session_state.get("min_overlap", 5))
-        )
-        # Warning for aggressive overlap
+        st.sidebar.slider("Min overlap (OLC):", 3, 80, key="min_overlap")
         if st.session_state.min_overlap > st.session_state.read_length * 0.25:
             st.sidebar.warning(f"⚠️ Min overlap cao (>{st.session_state.read_length * 0.25:.0f}bp) có thể tạo đồ thị thưa")
 
     # DBG params
     if st.session_state.algorithm in ["DBG", "So sánh cả hai"]:
-        st.session_state.k_value = st.sidebar.slider(
-            "Giá trị k (DBG):", 5, 31,
-            value=int(st.session_state.get("k_value", 7)), step=2
-        )
-        # Warning for k too high
+        st.sidebar.slider("Giá trị k (DBG):", 5, 31, step=2, key="k_value")
         if st.session_state.k_value > st.session_state.read_length / 3:
             st.sidebar.warning(f"⚠️ k cao (>{st.session_state.read_length // 3}) cần coverage cao hơn")
 
@@ -276,15 +350,24 @@ def _run_assembly():
 
     with st.sidebar:
         with st.spinner("Đang phân mảnh..."):
-            # Fragment genome — seed cố định, coverage dẫn xuất tự động
-            coverage = _derive_coverage(len(genome), st.session_state.read_length)
+            # Fragment genome — seed cố định.
+            # Coverage: preset override > auto-derive.
+            preset_cov = st.session_state.get("preset_coverage")
+            coverage = preset_cov if preset_cov else _derive_coverage(
+                len(genome), st.session_state.read_length
+            )
             st.session_state.coverage = coverage  # giữ để section hiển thị
             fragmenter = ReadFragmenter(seed=_FIXED_SEED)
-            st.session_state.reads = fragmenter.fragment(
+            # Dùng fragment_with_info để giữ vị trí gốc cho Coverage Map
+            read_infos = fragmenter.fragment_with_info(
                 genome,
                 st.session_state.read_length,
                 coverage,
             )
+            st.session_state.reads = [r.sequence for r in read_infos]
+            st.session_state.read_positions = [
+                (r.start_position, r.end_position, r.index) for r in read_infos
+            ]
 
         algo = st.session_state.algorithm
 
